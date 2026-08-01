@@ -1,0 +1,72 @@
+{
+  "anyio_version": "4.14.2",
+  "python_version": "3.12.13",
+  "rounds": 500,
+  "schema_version": "1",
+  "slope_kb_per_iter": 5.2139,
+  "span_iters": 489,
+  "top_lines": [
+    {
+      "count_diff": 978,
+      "file": "anyio/_backends/_asyncio.py",
+      "kb_diff": 362.9297,
+      "lineno": 2598
+    },
+    {
+      "count_diff": 978,
+      "file": "asyncio/base_events.py",
+      "kb_diff": 362.9297,
+      "lineno": 414
+    },
+    {
+      "count_diff": 1467,
+      "file": "weakref.py",
+      "kb_diff": 141.3516,
+      "lineno": 105
+    },
+    {
+      "count_diff": 1449,
+      "file": "_weakrefset.py",
+      "kb_diff": 136.6875,
+      "lineno": 39
+    },
+    {
+      "count_diff": 978,
+      "file": "asyncio/events.py",
+      "kb_diff": 133.7109,
+      "lineno": 720
+    },
+    {
+      "count_diff": 489,
+      "file": "anyio/_backends/_asyncio.py",
+      "kb_diff": 106.9688,
+      "lineno": 2481
+    },
+    {
+      "count_diff": 489,
+      "file": "_weakrefset.py",
+      "kb_diff": 103.1484,
+      "lineno": 49
+    },
+    {
+      "count_diff": 489,
+      "file": "_weakrefset.py",
+      "kb_diff": 103.1484,
+      "lineno": 38
+    },
+    {
+      "count_diff": 489,
+      "file": "anyio/_backends/_asyncio.py",
+      "kb_diff": 103.1484,
+      "lineno": 2599
+    },
+    {
+      "count_diff": 489,
+      "file": "anyio/_backends/_asyncio.py",
+      "kb_diff": 103.1484,
+      "lineno": 2052
+    }
+  ],
+  "total_delta_kb": 2549.61,
+  "warmup_iter": 10
+}

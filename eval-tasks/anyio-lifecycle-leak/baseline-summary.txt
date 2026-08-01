@@ -1,0 +1,22 @@
+# baseline-attribution — anyio 4.14.2 lifecycle leak
+
+anyio_version:       4.14.2
+python_version:      3.12.13
+rounds:              500
+snapshot span:       iter 10 -> iter 499
+span_iters:          489
+slope_kb_per_iter:  +5.2139
+total_delta_kb:     +2549.61
+
+Top 10 attribution lines (by size_diff):
+     kb_diff   count  location
+     +362.93    +978  anyio/_backends/_asyncio.py:2598
+     +362.93    +978  asyncio/base_events.py:414
+     +141.35   +1467  weakref.py:105
+     +136.69   +1449  _weakrefset.py:39
+     +133.71    +978  asyncio/events.py:720
+     +106.97    +489  anyio/_backends/_asyncio.py:2481
+     +103.15    +489  _weakrefset.py:49
+     +103.15    +489  _weakrefset.py:38
+     +103.15    +489  anyio/_backends/_asyncio.py:2599
+     +103.15    +489  anyio/_backends/_asyncio.py:2052
