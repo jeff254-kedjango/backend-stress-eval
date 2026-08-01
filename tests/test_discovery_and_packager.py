@@ -124,6 +124,27 @@ def _tiny_report(target_commit: str = "abc") -> Report:
     )
 
 
+def _variants_report(target_commit: str = "abc") -> Report:
+    # Mirrors what run_layer3_variants produces: ``target="variants"`` — the
+    # aggregate sentinel that must NOT be treated as a plugin name by the
+    # reproduce-stub packager. See test_reproduce_stub_prefers_plugin_over_variants_label.
+    return Report(
+        metadata=ReportMetadata(
+            target="variants",
+            target_commit=target_commit,
+            seed=0,
+            iterations_requested=1,
+            harness_version="0.0.1",
+        ),
+        result=RunResult(
+            success=True,
+            iterations_completed=1,
+            violations=(),
+            invariants_evaluated=("x::y",),
+        ),
+    )
+
+
 class TestPackager:
     def test_writes_three_files(self, tmp_path: Path) -> None:
         reports = {"layer1_repetition": _tiny_report()}
@@ -165,6 +186,72 @@ class TestPackager:
         out = package_eval_task(reports=reports, out_dir=tmp_path / "eval")
         stub = (out / "reproduce.py").read_text(encoding="utf-8")
         assert "'fastapi-0.141.1'" in stub
+
+    def test_reproduce_stub_inlines_plugin_name(self, tmp_path: Path) -> None:
+        # Plugin name is lifted from a non-``"variants"`` report's target,
+        # so the stub can resolve it via load_manifests() at replay time
+        # rather than needing the discovery caller's plugin instance.
+        reports = {"layer1_repetition": _tiny_report(target_commit="fastapi-0.141.1")}
+        out = package_eval_task(reports=reports, out_dir=tmp_path / "eval")
+        stub = (out / "reproduce.py").read_text(encoding="utf-8")
+        assert "'fastapi'" in stub
+        # The two placeholders must have been substituted — a raw
+        # ``PLACEHOLDER`` token in the shipped stub would be a regression.
+        assert "PLUGIN_NAME_PLACEHOLDER" not in stub
+        assert "TARGET_COMMIT_PLACEHOLDER" not in stub
+
+    def test_reproduce_stub_prefers_plugin_over_variants_label(self, tmp_path: Path) -> None:
+        # Layer 3 aggregate reports target=``"variants"``; the stub must NOT
+        # pick that as the plugin name — it would fail registry lookup at
+        # replay time. Prefer any non-variants target instead.
+        reports = {
+            "layer3_variants": _variants_report(target_commit="fastapi-0.141.1"),
+            "layer1_repetition": _tiny_report(target_commit="fastapi-0.141.1"),
+        }
+        out = package_eval_task(reports=reports, out_dir=tmp_path / "eval")
+        stub = (out / "reproduce.py").read_text(encoding="utf-8")
+        assert "'fastapi'" in stub
+        assert "'variants'" not in stub
+
+    def test_reproduce_stub_parses_as_python(self, tmp_path: Path) -> None:
+        # Bite-test: the stub was silently broken before this fix (called
+        # run_discovery(target_commit=...) with an outdated signature). A
+        # syntactically-invalid stub would blow up here. Rule 9: parse-then-
+        # trust beats read-then-hope.
+        import ast
+
+        reports = {"layer1_repetition": _tiny_report(target_commit="fastapi-0.141.1")}
+        out = package_eval_task(reports=reports, out_dir=tmp_path / "eval")
+        stub = (out / "reproduce.py").read_text(encoding="utf-8")
+        ast.parse(stub)  # raises SyntaxError on invalid Python
+
+    def test_reproduce_stub_actually_runs_end_to_end(self, tmp_path: Path) -> None:
+        # THE bite-test: invoke the packaged stub in a subprocess. This is
+        # what the shipped chunk-2c reports could not do — their stubs called
+        # run_discovery(target_commit=...) without a required plugin kwarg
+        # and died with TypeError. Any future signature drift will surface
+        # here rather than in a grader's environment.
+        import subprocess
+
+        reports = {"layer1_repetition": _tiny_report(target_commit="fastapi-0.141.1")}
+        out = package_eval_task(reports=reports, out_dir=tmp_path / "eval")
+        # Use the interpreter running this test so the stub sees our sys.path.
+        # ``sys.executable`` + a test-generated path — no user input, no shell.
+        result = subprocess.run(  # noqa: S603 — invocation is fully test-controlled
+            [sys.executable, str(out / "reproduce.py")],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert result.returncode == 0, (
+            f"reproduce.py failed (rc={result.returncode}):\n"
+            f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+        # It should have written a fresh replay/ directory.
+        assert (out / "replay" / "report.json").is_file()
+        assert (out / "replay" / "reproduce.py").is_file()
+        assert (out / "replay" / "summary.txt").is_file()
 
     def test_summary_contains_layer_headers(self, tmp_path: Path) -> None:
         reports = {"layer1_repetition": _tiny_report()}

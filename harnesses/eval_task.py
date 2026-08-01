@@ -62,7 +62,7 @@ _REPRODUCE_STUB: Final = """\
 #!/usr/bin/env python3
 \"\"\"Replay the discovery sweep for this target_commit.
 
-Requires ``pip install -e .[fastapi]`` from the backend-stress-eval repo,
+Requires ``pip install -e .[<plugin>]`` from the backend-stress-eval repo,
 then run this script from anywhere. The resulting report should match the
 one adjacent to this file (byte-equal); any deviation means the environment
 under test has changed.
@@ -74,11 +74,32 @@ from pathlib import Path
 
 from harnesses.discovery import run_discovery
 from harnesses.eval_task import package_eval_task
+from plugins.registry import load_manifests
 
 
 def main() -> None:
+    plugin_name = PLUGIN_NAME_PLACEHOLDER
     target_commit = TARGET_COMMIT_PLACEHOLDER
-    reports = run_discovery(target_commit=target_commit)
+
+    manifests = load_manifests()
+    if plugin_name not in manifests:
+        raise RuntimeError(
+            f\"plugin {plugin_name!r} not registered; \"
+            f\"available: {sorted(manifests)}. Did you `pip install -e .`?\"
+        )
+    manifest = manifests[plugin_name]
+    plugin = manifest.plugin_factory(manifest.default_app_factory)
+    variants = manifest.variants or None
+    variant_plugin_factory = (
+        (lambda af: manifest.plugin_factory(af)) if variants is not None else None
+    )
+
+    reports = run_discovery(
+        plugin=plugin,
+        target_commit=target_commit,
+        variants=variants,
+        variant_plugin_factory=variant_plugin_factory,
+    )
     out_dir = Path(__file__).parent / \"replay\"
     package_eval_task(reports=reports, out_dir=out_dir)
     print(f\"wrote replay to {out_dir}\")
@@ -108,11 +129,21 @@ def package_eval_task(*, reports: Mapping[str, Report], out_dir: Path) -> Path:
     # 2) summary.txt — human-readable.
     (out_dir / "summary.txt").write_text(_summary_text(reports), encoding="utf-8")
 
-    # 3) reproduce.py — a repro stub with the target commit inlined.
-    # Pull the target_commit from any of the reports (they all share it).
+    # 3) reproduce.py — a repro stub with target commit + plugin name inlined.
+    # ``target_commit`` is shared across reports; ``target`` names the plugin
+    # for per-layer plugin reports and the sentinel ``"variants"`` for the
+    # Layer 3 aggregate. Pick the first non-``"variants"`` label so the stub
+    # can invoke the registry cleanly; if only variants exist, fall back to
+    # ``"variants"`` (grader will see a clear registry-lookup error rather
+    # than a silent misroute — Rule 5).
     a_report = next(iter(reports.values()))
-    stub = _REPRODUCE_STUB.replace(
-        "TARGET_COMMIT_PLACEHOLDER", repr(a_report.metadata.target_commit)
+    target_commit = a_report.metadata.target_commit
+    plugin_name = next(
+        (r.metadata.target for r in reports.values() if r.metadata.target != "variants"),
+        a_report.metadata.target,
+    )
+    stub = _REPRODUCE_STUB.replace("TARGET_COMMIT_PLACEHOLDER", repr(target_commit)).replace(
+        "PLUGIN_NAME_PLACEHOLDER", repr(plugin_name)
     )
     (out_dir / "reproduce.py").write_text(stub, encoding="utf-8")
 
