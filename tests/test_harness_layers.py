@@ -132,6 +132,36 @@ def _reset_route_counter() -> None:
         delattr(_route_added_each_build_factory, "_counter")
 
 
+_RSS_LEAK_SINK: list[bytes] = []
+
+
+def _reset_rss_leak_sink() -> None:
+    _RSS_LEAK_SINK.clear()
+
+
+def _rss_leaky_lifespan_factory() -> FastAPI:
+    """FastAPI app whose lifespan allocates a fixed-size chunk that outlives
+    shutdown. Each ``build_app → lifespan_start → probe → lifespan_stop`` cycle
+    grows ``_RSS_LEAK_SINK`` by 64 KiB, producing a deterministic +64 KB/iter
+    slope. Used to prove :class:`RssSlopeBoundedOnHarnessState` fires through
+    the real Layer-2 harness (not just the invariant's own unit tests).
+    """
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Retained across shutdown — the bug pattern the invariant surfaces.
+        _RSS_LEAK_SINK.append(b"\x00" * 64 * 1024)
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+
+    @app.get("/")
+    def _root() -> dict[str, bool]:
+        return {"ok": True}
+
+    return app
+
+
 def _one_probe_request(client: object) -> None:
     # ``client`` is a TestClient; get / and discard the response body.
     r = client.get("/")  # type: ignore[attr-defined]
@@ -269,3 +299,38 @@ class TestLayer2Lifecycle:
                 rounds=0,
                 target_commit="test",
             )
+
+    def test_rss_slope_bounded_catches_planted_lifespan_leak(self) -> None:
+        # 60 rounds of a lifespan that retains 64 KiB per iteration. Well
+        # above the ~1 KB/iter noise floor, well above the 50-sample fit
+        # floor. The slope invariant must fire; collapse_repeated_violations
+        # ensures exactly one row per invariant name.
+        _reset_leak_sink()
+        _reset_rss_leak_sink()
+        try:
+            plugin = FastAPIPlugin(app_factory=_rss_leaky_lifespan_factory)
+            report = run_layer2_lifecycle(
+                plugin=plugin,
+                request_callable=_one_probe_request,
+                route_signature_of=_fastapi_route_signature,
+                rounds=60,
+                target_commit="test",
+            )
+        finally:
+            _reset_rss_leak_sink()  # release the ~4 MiB we planted
+        assert report.result.success is False
+        names = [v.invariant_name for v in report.result.violations]
+        # RSS slope MUST fire; threshold MAY also fire — both are legitimate
+        # signals for this leak shape. Assert on the specific new invariant.
+        assert "rss_slope_bounded" in names
+        # Locate the slope violation and check evidence shape.
+        slope_v = next(
+            v for v in report.result.violations if v.invariant_name == "rss_slope_bounded"
+        )
+        assert slope_v.evidence["samples"] == 60
+        slope = slope_v.evidence["slope_kb_per_iter"]
+        assert isinstance(slope, float)
+        # Real leak is 64 KB/iter; noise + allocator behaviour make the fit
+        # inexact but it must be clearly positive and clearly above the
+        # default 1 KB/iter limit.
+        assert slope >= 10.0

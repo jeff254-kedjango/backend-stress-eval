@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from core.framework_invariants import ResponseDeterminism, RouteRegistryStable
 from core.invariant import CheckResult, JsonValue, Ok, Violation
 from core.metrics import Sample
-from core.runner import RunResult
+from core.runner import Cadence, RunResult
 
 __all__ = [
     "FdReturnToBaselineOnHarnessState",
@@ -24,6 +24,7 @@ __all__ = [
     "ResponseDeterminismOnHarnessState",
     "RouteRegistryStableOnHarnessState",
     "RssReturnToBaselineOnHarnessState",
+    "RssSlopeBoundedOnHarnessState",
     "collapse_repeated_violations",
 ]
 
@@ -46,6 +47,12 @@ class HarnessState:
     sample: Sample
     route_signature: tuple[str, ...]
     response_digest: str | None = None
+    # ``rss_trajectory`` — populated by the harness ONLY on the final
+    # iteration (empty tuple otherwise). Enables end-only slope invariants to
+    # see the full RSS history without paying tuple-copy cost on every
+    # iteration. Rule 1: per-iteration cost stays O(1); the O(N) copy fires
+    # exactly once at the boundary.
+    rss_trajectory: tuple[int, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +168,126 @@ class _DigestView:
     """Minimal proxy for :class:`core.framework_invariants.HasResponseDigest`."""
 
     response_digest: str | None
+
+
+# ---------------------------------------------------------------------------
+# Slope-based RSS invariant. End-only cadence: fires exactly once, at the
+# end of a run, over the whole recorded trajectory. Catches slow drips that
+# never cross the fixed threshold of :class:`RssReturnToBaselineOnHarnessState`
+# but do exhibit a persistent positive slope (real leaks).
+# ---------------------------------------------------------------------------
+_MIN_SLOPE_FIT_POINTS = 50
+"""Below this many recorded samples we cannot compute a meaningful slope. We
+report :class:`Ok` rather than producing a low-confidence Violation. Fifty is
+chosen empirically: with a real framework's ~1-2 KB/iter allocator noise, 20
+samples yields spurious slopes above 1 KB/iter (measured on FastAPI 0.141.1),
+whereas 50 samples smooths the noise floor enough for a 1 KB/iter default
+limit to only fire on true leaks. Short unit-test runs (typically 5-20 rounds)
+stay silent by design."""
+
+
+@dataclass(frozen=True, slots=True)
+class RssSlopeBoundedOnHarnessState:
+    """RSS-per-iteration slope must not exceed ``max_kb_per_iter``.
+
+    Rationale: a slow lifecycle leak (e.g. FastAPI 0.141.1's ~9 KB/iter Python-
+    heap growth) never trips a fixed-slack threshold cleanly — with slack N,
+    the drift crosses at iteration ~N/slope, which just picks the alarm's
+    firing point. A slope invariant is scale-free: it decides "does RSS grow
+    proportionally to iterations?" — that is the real Layer-5 property.
+
+    Cadence: end-only. The invariant reads
+    :attr:`HarnessState.rss_trajectory`, which the harness populates on the
+    final iteration. Rule 1: fit is O(N) but runs once at the boundary; per-
+    iteration cost stays O(1).
+
+    Rule 5 note: mypy-friendly dataclass, ``cadence`` exposed for
+    :class:`core.runner.HasCadence` structural check.
+    """
+
+    max_kb_per_iter: float = 1.0
+    name: str = "rss_slope_bounded"
+    cadence: Cadence = field(default_factory=lambda: Cadence(end_only=True))
+
+    def setup(self, state: HarnessState, /) -> int:
+        # Baseline RSS is captured for provenance in the Violation evidence
+        # (so a grader can see "started at 44928 KB, slope +9 KB/iter").
+        return state.sample.rss_kb
+
+    def check(self, state: HarnessState, baseline: int, iteration: int, /) -> CheckResult:
+        trajectory = state.rss_trajectory
+        n = len(trajectory)
+        if n < _MIN_SLOPE_FIT_POINTS:
+            # Rule 5: fail *safe* rather than reporting a low-confidence slope.
+            # A short run legitimately cannot be judged; the threshold
+            # invariant is still active and would have fired on catastrophic
+            # growth.
+            return Ok(invariant_name=self.name)
+        slope_kb_per_iter, intercept_kb, r_squared = _linear_fit(trajectory)
+        if slope_kb_per_iter <= self.max_kb_per_iter:
+            return Ok(invariant_name=self.name)
+        # Slope KB/iter is a float; round to 4 places for stable JSON output
+        # (byte-stability contract — see ``core/reporter.py`` design notes).
+        slope_rounded = round(slope_kb_per_iter, 4)
+        r2_rounded = round(r_squared, 4)
+        intercept_rounded = round(intercept_kb, 2)
+        return Violation(
+            invariant_name=self.name,
+            detail=(
+                f"RSS grows +{slope_rounded} KB/iter (limit {self.max_kb_per_iter}); "
+                f"linear fit R²={r2_rounded} over {n} samples"
+            ),
+            evidence={
+                "baseline_kb": baseline,
+                "final_kb": trajectory[-1],
+                "samples": n,
+                "slope_kb_per_iter": slope_rounded,
+                "intercept_kb": intercept_rounded,
+                "r_squared": r2_rounded,
+                "max_kb_per_iter": self.max_kb_per_iter,
+            },
+            iteration=iteration,
+        )
+
+
+def _linear_fit(trajectory: tuple[int, ...]) -> tuple[float, float, float]:
+    """Least-squares linear regression of ``y = slope * i + intercept``.
+
+    Returns ``(slope, intercept, r_squared)``. Input is per-iteration RSS
+    samples; ``i`` is the iteration index (0-based). Rule 1: O(N) single
+    pass, no allocations beyond a handful of accumulators. Rule 5: pure
+    function — determinism trivially provable.
+
+    Callers guarantee ``len(trajectory) >= _MIN_SLOPE_FIT_POINTS`` (checked
+    by :class:`RssSlopeBoundedOnHarnessState.check` before calling), so the
+    denominator ``sum((x-mx)^2)`` is strictly positive.
+    """
+    n = len(trajectory)
+    # Sum-of-x and sum-of-y in one pass.
+    sum_x = 0
+    sum_y = 0
+    for i, y in enumerate(trajectory):
+        sum_x += i
+        sum_y += y
+    mean_x = sum_x / n
+    mean_y = sum_y / n
+    # Sum-of-squares in one more pass (kept separate for numerical clarity;
+    # combining introduces catastrophic cancellation with small variances).
+    ss_xy = 0.0
+    ss_xx = 0.0
+    ss_yy = 0.0
+    for i, y in enumerate(trajectory):
+        dx = i - mean_x
+        dy = y - mean_y
+        ss_xy += dx * dy
+        ss_xx += dx * dx
+        ss_yy += dy * dy
+    slope = ss_xy / ss_xx
+    intercept = mean_y - slope * mean_x
+    # R² — coefficient of determination. If ss_yy == 0 the trajectory is
+    # flat; slope is 0 and R² is undefined — report 1.0 (perfect flat fit).
+    r_squared = (ss_xy * ss_xy) / (ss_xx * ss_yy) if ss_yy > 0 else 1.0
+    return slope, intercept, r_squared
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from harnesses import (
     HarnessState,
     RouteRegistryStableOnHarnessState,
     RssReturnToBaselineOnHarnessState,
+    RssSlopeBoundedOnHarnessState,
     collapse_repeated_violations,
 )
 
@@ -36,9 +37,19 @@ __all__ = ["run_layer2_lifecycle"]
 
 
 def _default_registry() -> InvariantRegistry:
-    """Default invariants for Layer 2."""
+    """Default invariants for Layer 2.
+
+    Two RSS invariants intentionally coexist:
+      * ``RssReturnToBaselineOnHarnessState`` — fixed-slack threshold; fires
+        on catastrophic leaks the first time drift exceeds slack.
+      * ``RssSlopeBoundedOnHarnessState`` — end-only slope fit; catches slow
+        drips that would never trip the threshold cleanly but do exhibit a
+        persistent positive slope (see discovery-strategy.md §5, §9 Layer 5).
+    Together they cover both leak shapes without either shadowing the other.
+    """
     reg = InvariantRegistry()
     reg.register(RssReturnToBaselineOnHarnessState())
+    reg.register(RssSlopeBoundedOnHarnessState())
     reg.register(FdReturnToBaselineOnHarnessState())
     reg.register(RouteRegistryStableOnHarnessState())
     return reg
@@ -66,6 +77,13 @@ def run_layer2_lifecycle(
 
     reg = registry if registry is not None else _default_registry()
 
+    # Per-iteration RSS accumulator. Only exposed on the final iteration via
+    # ``HarnessState.rss_trajectory`` — end-only slope invariants read it
+    # there. Rule 1: append is O(1); the O(N) tuple copy fires once at
+    # iteration == rounds - 1.
+    trajectory_rss_kb: list[int] = []
+    final_iteration = rounds - 1
+
     def state_producer(iteration: int) -> object:
         # Baseline (iteration == -1) uses a probe app that is fully torn
         # down before we return, so nothing lingers from setup.
@@ -79,7 +97,17 @@ def run_layer2_lifecycle(
             snapshot_routes = route_signature_of(app)
         finally:
             plugin.lifecycle_stop(app)
-        return HarnessState(sample=snapshot_sample, route_signature=snapshot_routes)
+        # Record real iterations (0..rounds-1); skip the baseline capture.
+        if iteration >= 0:
+            trajectory_rss_kb.append(snapshot_sample.rss_kb)
+        rss_trajectory: tuple[int, ...] = (
+            tuple(trajectory_rss_kb) if iteration == final_iteration else ()
+        )
+        return HarnessState(
+            sample=snapshot_sample,
+            route_signature=snapshot_routes,
+            rss_trajectory=rss_trajectory,
+        )
 
     raw_result = Runner(reg, state_producer, iterations=rounds).run()
     # Fold repeated same-invariant violations (e.g. a slow leak that trips
