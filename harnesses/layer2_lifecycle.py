@@ -29,6 +29,7 @@ from harnesses import (
     HarnessState,
     RouteRegistryStableOnHarnessState,
     RssReturnToBaselineOnHarnessState,
+    collapse_repeated_violations,
 )
 
 __all__ = ["run_layer2_lifecycle"]
@@ -80,7 +81,13 @@ def run_layer2_lifecycle(
             plugin.lifecycle_stop(app)
         return HarnessState(sample=snapshot_sample, route_signature=snapshot_routes)
 
-    result = Runner(reg, state_producer, iterations=rounds).run()
+    raw_result = Runner(reg, state_producer, iterations=rounds).run()
+    # Fold repeated same-invariant violations (e.g. a slow leak that trips
+    # the same threshold every iteration) into a single reporting row per
+    # invariant. Preserves ``iterations_completed`` + ``success`` — this is a
+    # display-shape transform, not a re-evaluation. See
+    # ``harnesses.collapse_repeated_violations`` for the fold contract.
+    result = collapse_repeated_violations(raw_result)
 
     return Report(
         metadata=ReportMetadata(

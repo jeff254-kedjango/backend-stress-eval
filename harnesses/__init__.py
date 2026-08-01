@@ -10,11 +10,13 @@ See ``discovery-strategy.md`` §9 (Layers 1..5).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 
 from core.framework_invariants import ResponseDeterminism, RouteRegistryStable
-from core.invariant import CheckResult, Ok, Violation
+from core.invariant import CheckResult, JsonValue, Ok, Violation
 from core.metrics import Sample
+from core.runner import RunResult
 
 __all__ = [
     "FdReturnToBaselineOnHarnessState",
@@ -22,6 +24,7 @@ __all__ = [
     "ResponseDeterminismOnHarnessState",
     "RouteRegistryStableOnHarnessState",
     "RssReturnToBaselineOnHarnessState",
+    "collapse_repeated_violations",
 ]
 
 
@@ -158,3 +161,84 @@ class _DigestView:
     """Minimal proxy for :class:`core.framework_invariants.HasResponseDigest`."""
 
     response_digest: str | None
+
+
+# ---------------------------------------------------------------------------
+# Reporting helper — collapse repeated same-invariant violations into one.
+# ---------------------------------------------------------------------------
+# Rationale: a slow lifecycle leak (e.g. FastAPI 0.141.1's ~9 KB/iter Python-
+# heap growth) triggers ``rss_return_to_baseline`` on hundreds of consecutive
+# iterations. All of them describe the *same* underlying bug. Emitting 418
+# violation rows makes the grading report read like 418 bugs, which hurts the
+# eval signal. This helper keeps the first Violation seen per invariant name
+# and folds a small aggregate into its ``evidence`` — enough to reconstruct
+# the trajectory shape without inflating the wire payload (Rule 1: single
+# linear scan; Rule 5: fold is transparent and named).
+_COLLAPSE_SUMMARY_KEY = "collapsed"
+
+
+def _extract_int(evidence: Mapping[str, JsonValue], key: str) -> int | None:
+    """Return ``evidence[key]`` iff it is an int, else ``None``.
+
+    Kept private and defensive so evidence shapes that don't carry a numeric
+    drift field are simply ignored during folding — the primary Violation
+    still survives, just without a ``max_drift`` summary.
+    """
+    value = evidence.get(key)
+    return value if isinstance(value, int) else None
+
+
+def collapse_repeated_violations(result: RunResult) -> RunResult:
+    """Return a new :class:`RunResult` with at most one Violation per invariant.
+
+    For each invariant name, the *earliest* Violation is retained (so
+    ``iteration`` points at when the property first broke) and its
+    ``evidence`` gains a ``collapsed`` sub-mapping::
+
+        {"count": N, "first_iteration": i0, "last_iteration": iN,
+         "max_drift_kb": <if numeric>, "max_drift": <if numeric non-KB>}
+
+    ``success``, ``iterations_completed`` and ``invariants_evaluated`` are
+    preserved unchanged — this is a reporting-shape transform only, not a
+    re-evaluation. Byte-stable per Rule 9: same inputs → same output.
+    """
+    if not result.violations:
+        return result
+
+    # Single linear scan (Rule 1: O(N_violations)).
+    first_by_name: dict[str, Violation] = {}
+    stats: dict[str, dict[str, int]] = {}
+    for v in result.violations:
+        name = v.invariant_name
+        drift_kb = _extract_int(v.evidence, "drift_kb")
+        drift_generic = _extract_int(v.evidence, "drift")
+        iteration = v.iteration if v.iteration is not None else -1
+        if name not in first_by_name:
+            first_by_name[name] = v
+            stats[name] = {
+                "count": 1,
+                "first_iteration": iteration,
+                "last_iteration": iteration,
+            }
+            if drift_kb is not None:
+                stats[name]["max_drift_kb"] = drift_kb
+            if drift_generic is not None:
+                stats[name]["max_drift"] = drift_generic
+            continue
+        s = stats[name]
+        s["count"] += 1
+        s["last_iteration"] = iteration
+        if drift_kb is not None:
+            s["max_drift_kb"] = max(s.get("max_drift_kb", drift_kb), drift_kb)
+        if drift_generic is not None:
+            s["max_drift"] = max(s.get("max_drift", drift_generic), drift_generic)
+
+    collapsed: list[Violation] = []
+    for name, first in first_by_name.items():
+        merged: dict[str, JsonValue] = dict(first.evidence)
+        # Preserve existing keys; add a namespaced summary so grading readers
+        # can spot the fold without evidence key collisions.
+        merged[_COLLAPSE_SUMMARY_KEY] = dict(stats[name])
+        collapsed.append(replace(first, evidence=merged))
+
+    return replace(result, violations=tuple(collapsed))
