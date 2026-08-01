@@ -18,9 +18,11 @@ from pathlib import Path
 _EXIT_PASS = 0
 _EXIT_FAIL = 1
 _EXIT_SETUP = 2
+_EXIT_SHELVED = 3  # eval task shelved — refuse to grade (Rule 5, fail-loud)
 
 _MAX_KB_PER_ITER = 1.0
 _EXPECTED_ARGV_LEN = 3  # script name + baseline path + replay path
+_SHELVED_MARKER = "_shelved"  # any path component named this → refuse
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -130,6 +132,21 @@ def _check_g4(baseline: dict[str, object], replay: dict[str, object]) -> tuple[b
 
 
 def main(argv: list[str]) -> int:
+    # Refuse to grade if this grader lives under a "_shelved" directory. The
+    # eval task was retired as a negative result — see SHELVED.md next to
+    # this script for the full audit trail. Rule 5: fail loud and refuse to
+    # produce a misleading PASS/FAIL that a caller might mistake for a
+    # submission-quality verdict.
+    grader_path = Path(argv[0]).resolve()
+    if _SHELVED_MARKER in grader_path.parts:
+        shelved_md = grader_path.parent / "SHELVED.md"
+        print(
+            "error: this eval task is shelved as a documented negative result "
+            f"(see {shelved_md}). Grading is disabled. "
+            "Do not submit; see Chunk 7b for the replacement search.",
+            file=sys.stderr,
+        )
+        return _EXIT_SHELVED
     if len(argv) != _EXPECTED_ARGV_LEN:
         print(
             f"usage: {argv[0]} <baseline-report.json> <replay-report.json>",
