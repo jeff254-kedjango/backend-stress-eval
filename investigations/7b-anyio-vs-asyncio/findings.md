@@ -77,10 +77,58 @@ documented anywhere the four novelty searches found (see 7b-3 task and
   `Runner` and use raw `asyncio.new_event_loop() + loop.run_until_complete
   + loop.close()` — but the anyio-cut run already uses that pattern in
   `_one_lifecycle()`, and it comes up clean. So it's very likely anyio.
-- Whether the leak reproduces without the FastAPI/Starlette layer at all
-  (pure `anyio.run(some_async_fn)` in a loop). Not measured here.
+- ~~Whether the leak reproduces without the FastAPI/Starlette layer at all
+  (pure `anyio.run(some_async_fn)` in a loop). Not measured here.~~
+  **RESOLVED — see 7b-5 addendum below.**
 - Whether newer anyio versions (e.g., a hypothetical 4.15) already fix
   this. anyio 4.14.2 is the current stable at time of writing.
+
+## 7b-5 addendum — bare-anyio reproducer confirms end-to-end
+
+Written 2026-08-02 alongside `bare_anyio_repro.py`. Two modes:
+
+- **`run-only`** — `anyio.run(async def f: pass)` in a loop; no worker pool
+- **`run-and-thread`** — `anyio.run(coro)` where the coro does one
+  `await anyio.to_thread.run_sync(int)`; invokes the worker pool once/iter
+
+Both modes tested at 500 rounds, snapshot iter 10 → 499, anyio 4.14.2 in
+`.venv-fastapi-0.115.0/` (the only anyio present in the env — FastAPI +
+Starlette are installed but never imported by this script).
+
+| Mode | Slope | Top anyio backend lines |
+|---|---:|---|
+| `run-only`      | **+0.40 KB/iter** | Only L2457 (Runner scaffold), low share |
+| `run-and-thread`| **+5.21 KB/iter** | L2598 (workers=set), L2599 (idle_workers=deque), L2481 (runner.run), L2052 (limiter borrowers), L2053 (limiter wait_queue) — the exact list from the FastAPI attribution |
+
+**Conclusion:** the leak is entirely in `anyio.to_thread.run_sync` /
+worker-pool state. `asyncio.Runner` alone is nearly clean (+0.40 KB/iter
+is within noise). FastAPI/Starlette are only ever consumers that route
+sync handlers through `run_in_threadpool` → `anyio.to_thread.run_sync`
+and thereby expose the leak.
+
+**Minimum reproducer** (10 lines, no third-party deps other than anyio):
+
+```python
+import anyio
+
+async def f():
+    await anyio.to_thread.run_sync(int)
+
+if __name__ == "__main__":
+    for _ in range(500):
+        anyio.run(f)
+    # Now inspect RSS or run under tracemalloc — ~2.5 MB grew above baseline.
+```
+
+That's exactly the shape a frontier-eval task wants: single file, single
+dependency, one-page task statement.
+
+### Reproducing 7b-5
+
+```bash
+.venv-fastapi-0.115.0/bin/python investigations/7b-anyio-vs-asyncio/bare_anyio_repro.py \
+    --mode run-and-thread --rounds 500 --warmup-iter 10 --top 15
+```
 
 ## Reproducing
 
