@@ -1,0 +1,89 @@
+[project]
+name = "backend-stress-eval"
+version = "0.0.1"
+description = "Generic backend stress + lifecycle exploration harness for frontier-model debugging evaluation. See discovery-strategy.md and rules.md."
+readme = "discovery-strategy.md"
+requires-python = "==3.12.*"
+license = { text = "Proprietary" }
+
+# No runtime dependencies yet. Chunk 1 is scaffolding only.
+# Framework adapters (plugins/fastapi, etc.) will pin their own deps in later chunks.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    # pytest >=9.0.3 fixes PYSEC-2026-1845 (see check.sh gate 2026-08-01).
+    "pytest==9.1.1",
+    "ruff==0.6.9",
+    "mypy==1.11.2",
+    "pip-audit==2.7.3",
+]
+# ``fastapi`` extra: pulls in the target framework for the ``plugins/fastapi``
+# adapter (Chunk 7). Core has zero runtime deps; the extra is opt-in so
+# plugins for other ecosystems don't drag FastAPI along.
+# httpx2 is Starlette's preferred TestClient backend (bare ``httpx`` emits a
+# StarletteDeprecationWarning at import time).
+fastapi = [
+    "fastapi==0.141.1",
+    "starlette==1.3.1",
+    "httpx2==2.9.1",
+]
+
+[project.scripts]
+# The one-command entry point. After `uv pip install -e .[dev,fastapi]`,
+# `bse` is on PATH inside the venv. See manual.md §3.
+bse = "cli.main:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "harnesses", "plugins", "cli"]
+
+# ------------------------------------------------------------------
+# Ruff — lint + format. Strict, but scoped to the source we own.
+# ------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "reports"]
+
+[tool.ruff.lint]
+# E/F: pyflakes+pycodestyle, I: import sort, B: bugbear, UP: pyupgrade,
+# SIM: simplify, S: bandit (security), RUF: ruff-native, PL: pylint subset,
+# TID: tidy imports, ARG: unused args (dead-code Rule 4), PTH: pathlib.
+select = ["E", "F", "I", "B", "UP", "SIM", "S", "RUF", "PL", "TID", "ARG", "PTH"]
+ignore = [
+    "PLR0913",  # too many arguments — decided per-callsite
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use `assert` (S101) and hardcoded literals.
+"tests/**/*.py" = ["S101", "PLR2004"]
+# UP040 asks for PEP 695 `type X = ...` syntax, but mypy 1.11 still gates it
+# behind --enable-incomplete-feature=NewGenericSyntax. Until we bump mypy past
+# stable support, we keep `TypeAlias` (which mypy accepts) and mute ruff here.
+"core/invariant.py" = ["UP040"]
+
+# ------------------------------------------------------------------
+# Mypy — strict, no framework-specific escapes yet.
+# ------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_unimported = true
+# Explicit package roots so mypy doesn't scan .venv.
+files = ["core", "harnesses", "plugins", "cli", "tests"]
+exclude = "(^|/)(\\.venv|reports)/"
+
+# ------------------------------------------------------------------
+# Pytest — quiet, strict markers, fail on unknown config.
+# ------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
