@@ -222,6 +222,56 @@ class TestLayer1Repetition:
                 target_commit="test",
             )
 
+    def test_rss_slope_bounded_catches_planted_per_request_leak(self) -> None:
+        # Per-*request* leak (as opposed to Layer 2's per-lifecycle leak):
+        # each probe grows a module-global list by 64 KiB. Layer 1 runs one
+        # long-lived app so the leak accumulates across requests, not
+        # lifecycles. With 60 iterations we're above the 50-sample fit floor
+        # and the +64 KB/request slope must fire the slope invariant.
+        _reset_leak_sink()
+        _reset_per_request_leak()
+
+        def _leaky_probe(client: object) -> None:
+            _PER_REQUEST_LEAK.append(b"\x00" * 64 * 1024)
+            r = client.get("/")  # type: ignore[attr-defined]
+            assert r.status_code == 200
+
+        try:
+            plugin = FastAPIPlugin(app_factory=_clean_app_factory)
+            report = run_layer1_repetition(
+                plugin=plugin,
+                request_callable=_leaky_probe,
+                iterations=60,
+                target_commit="test",
+            )
+        finally:
+            _reset_per_request_leak()  # release the ~4 MiB we planted
+        assert report.result.success is False
+        names = [v.invariant_name for v in report.result.violations]
+        # Slope MUST fire; threshold MAY also fire — both are legitimate.
+        assert "rss_slope_bounded" in names
+        slope_v = next(
+            v for v in report.result.violations if v.invariant_name == "rss_slope_bounded"
+        )
+        assert slope_v.evidence["samples"] == 60
+        slope = slope_v.evidence["slope_kb_per_iter"]
+        assert isinstance(slope, float)
+        # +64 KB/request; noise makes the fit inexact but it must be clearly
+        # positive and clearly above the 1 KB/iter limit.
+        assert slope >= 10.0
+
+
+# ---------------------------------------------------------------------------
+# Per-request leak fixture (Layer 1). Module-global list so the closure the
+# leaky probe captures survives across function calls exactly like a real
+# ``lru_cache`` or module-level accumulator would.
+# ---------------------------------------------------------------------------
+_PER_REQUEST_LEAK: list[bytes] = []
+
+
+def _reset_per_request_leak() -> None:
+    _PER_REQUEST_LEAK.clear()
+
 
 # ---------------------------------------------------------------------------
 # Layer 2 — lifecycle.

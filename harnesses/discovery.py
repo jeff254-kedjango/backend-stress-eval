@@ -35,10 +35,15 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Discovery-scale defaults — "modest" per Chunk 0 design.
 # Under a minute total on a laptop. Bump when the harness is trusted.
+#
+# L2 + L3 defaults are >= the slope invariant's fit floor (50 samples) so
+# that :class:`RssSlopeBoundedOnHarnessState` is meaningfully active on both
+# layers; below the floor it silently returns Ok (per fail-safe design) and
+# per-variant slope drift never surfaces. L3 lifted 20 → 50 for this reason.
 # ---------------------------------------------------------------------------
 DEFAULT_ITERATIONS_L1: int = 500
 DEFAULT_ROUNDS_L2: int = 50
-DEFAULT_ROUNDS_L3: int = 20
+DEFAULT_ROUNDS_L3: int = 50
 
 
 def run_discovery(

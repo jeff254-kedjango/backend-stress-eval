@@ -23,15 +23,25 @@ from harnesses import (
     FdReturnToBaselineOnHarnessState,
     HarnessState,
     RssReturnToBaselineOnHarnessState,
+    RssSlopeBoundedOnHarnessState,
+    collapse_repeated_violations,
 )
 
 __all__ = ["run_layer1_repetition"]
 
 
 def _default_registry() -> InvariantRegistry:
-    """Default invariants for Layer 1 — memory and FD returns to baseline."""
+    """Default invariants for Layer 1.
+
+    Layer 1 exercises one long-lived app under repetition. RSS drift here is
+    a per-*request* leak (as opposed to Layer 2's per-*lifecycle* leak), so
+    both fixed-threshold and slope-based invariants make sense — a slow
+    per-request leak may never trip the threshold but exhibits a persistent
+    positive slope (§9 Layer 5's "memory returns to baseline" property).
+    """
     reg = InvariantRegistry()
     reg.register(RssReturnToBaselineOnHarnessState())
+    reg.register(RssSlopeBoundedOnHarnessState())
     reg.register(FdReturnToBaselineOnHarnessState())
     return reg
 
@@ -61,15 +71,36 @@ def run_layer1_repetition(
 
     reg = registry if registry is not None else _default_registry()
 
+    # Per-iteration RSS accumulator; only exposed on the final iteration via
+    # ``HarnessState.rss_trajectory`` — end-only slope invariants read it
+    # there. Rule 1: append is O(1); the O(N) tuple copy fires once at
+    # iteration == iterations - 1.
+    trajectory_rss_kb: list[int] = []
+    final_iteration = iterations - 1
+
     def state_producer(iteration: int) -> object:
         if iteration >= 0:
             request_callable(client)
-        return HarnessState(sample=sample(), route_signature=())
+        snapshot_sample = sample()
+        if iteration >= 0:
+            trajectory_rss_kb.append(snapshot_sample.rss_kb)
+        rss_trajectory: tuple[int, ...] = (
+            tuple(trajectory_rss_kb) if iteration == final_iteration else ()
+        )
+        return HarnessState(
+            sample=snapshot_sample,
+            route_signature=(),
+            rss_trajectory=rss_trajectory,
+        )
 
     try:
-        result = Runner(reg, state_producer, iterations=iterations).run()
+        raw_result = Runner(reg, state_producer, iterations=iterations).run()
     finally:
         plugin.lifecycle_stop(app)
+    # Fold repeated same-invariant violations for parity with Layer 2 — a
+    # slow per-request leak that trips the threshold on every iteration
+    # should surface as ONE row, not N. See collapse_repeated_violations.
+    result = collapse_repeated_violations(raw_result)
 
     return Report(
         metadata=ReportMetadata(
