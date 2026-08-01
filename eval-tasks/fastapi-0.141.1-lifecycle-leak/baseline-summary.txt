@@ -1,0 +1,14 @@
+=== layer1_repetition ===
+[fastapi@fastapi-0.141.1] PASS iterations=5000/5000 invariants=3 violations=0
+
+=== layer2_lifecycle ===
+[fastapi@fastapi-0.141.1] FAIL iterations=500/500 invariants=4 violations=2
+  - iter=64 rss_return_to_baseline: RSS drifted +1152 KB above baseline (slack 1024 KB)
+  - iter=499 rss_slope_bounded: RSS grows +8.7222 KB/iter (limit 1.0); linear fit R²=0.9856 over 500 samples
+
+=== layer3_variants ===
+[variants@fastapi-0.141.1] FAIL iterations=100/100 invariants=8 violations=1
+  - iter=49 minimal::rss_slope_bounded: RSS grows +8.3899 KB/iter (limit 1.0); linear fit R²=0.8381 over 50 samples
+
+=== layer4_sequence ===
+[fastapi@fastapi-0.141.1] PASS iterations=3/3 invariants=3 violations=0
