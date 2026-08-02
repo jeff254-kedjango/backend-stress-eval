@@ -152,3 +152,45 @@ imports work unchanged there):
 Chunk 8 (rubric axes) can now target a **clean, single-vendor eval-task
 scope**: "reduce anyio-attributed per-lifecycle drift below 1 KB/iter",
 with 3-4 orthogonal gates. Chunk 7 (new eval-task packaging) is unblocked.
+
+## v2 model comparison — long-run flatness (2026-08-02)
+
+Graded the two Bonsai-CLI outputs (`~/eval-outputs/model-{A,B}-2026-08-02`)
+for the v2 symptom-only anyio task. Both patch the same root cause — the
+finished root task strong-refs the per-loop `RunVar` mapping — but at
+opposite ends of the cycle:
+
+- **Model A** (23-line diff): unrolls the `Runner` context manager and, in a
+  `finally`, manually evicts the loop's entry via the private
+  `RunVar._clear_token(loop)`. Post-hoc cleanup; depends on teardown order +
+  a private API.
+- **Model B** (9-line diff): stores `_root_task` as a `weakref.ref` and
+  dereferences on read in `find_root_task()`. Removes the strong reference by
+  construction; no manual eviction.
+
+Ran `scripts/flatness_check.py` (RSS-slope + live-loop probe) at increasing
+scale. Clean unpatched anyio 4.14.2 is the leaking baseline.
+
+| Scale | Model | Slope KB/iter | RSS growth | Live loops |
+|---|---|---:|---:|---:|
+| 4,000    | clean (unpatched) | 5.27  | +19,712 KB | 4,000  |
+| 4,000    | A                 | 0.05  | +512 KB    | 0      |
+| 4,000    | B                 | 0.05  | +512 KB    | 0      |
+| 400,000  | A                 | 0.004 | +2,232 KB  | 0      |
+| 400,000  | B                 | 0.002 | +2,256 KB  | 0      |
+
+**Conclusion:** both fixes hold flat at 100× scale. Slope *drops* with more
+iterations (0.05 → ~0.003), the signature of a one-time page-pool bump being
+amortized, not a slow leak — the unpatched baseline would have grown ~2 GB
+over 400k calls; both grew ~2 MB. `live_loops` is 0 at every scale (vs.
+== round-count when leaking): every event loop is collected, so the leak is
+gone by construction, not merely slowed. At 400k the A-vs-B difference (~24 KB
+total) is within run-to-run RSS noise.
+
+**Eval-quality caveat:** both models fully pass ALL FOUR grading criteria at
+any iteration count. The task does NOT differentiate them on the criteria —
+only on fix economy/fragility (B's 9-line weakref vs A's 23-line private-API
+cleanup), which the prose rubric doesn't score. By the strict "models must
+perform differently on at least some grading criterion" bar, v2 is a WEAK
+differentiator: the anyio leak is still too tractable for frontier models.
+See [[backend-stress-eval-6b-attribution]].
