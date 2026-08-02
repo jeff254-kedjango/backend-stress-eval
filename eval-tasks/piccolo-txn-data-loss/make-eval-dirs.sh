@@ -79,7 +79,7 @@ for TAG in "${TAGS[@]}"; do
         exit 2
     fi
     for leaked in measure.py RUBRIC.md grade.py grading-criteria.md \
-        findings.md README.md probes.py; do
+        findings.md README.md RUN.md probes.py; do
         if [[ -e "$DEST/$leaked" ]]; then
             echo "error: leak — $leaked ended up in $DEST" >&2
             exit 2
