@@ -13,8 +13,20 @@ Fill `time` and `turns` in by hand from each run.
 
 | date | model | protocol | time (min) | turns | verdict (INSERT_LOSS/REMOVE_DUP/SAVEPOINT_LOSS/COMMIT/PLAIN/UPDATE/ROLLBACK) | notes |
 |------|-------|----------|-----------|-------|-------------------------------------------------------------------------------|-------|
-| — | A | prompt-only | — | — | — | pending run |
-| — | B | prompt-only | — | — | — | pending run |
+| 2026-08-03 | A | prompt-only | 13.4 (13m22s) | n/r | PASS (all 7 gates) | general fix; `_restore_on_rollback` builder chained onto delete query. 6 files: table+13, engine/base+143, sqlite+9, postgres+9, insert+9, delete+32. |
+| 2026-08-03 | B | prompt-only | 10.25 (10m15s) | n/r | PASS (all 7 gates) | general fix; `_state_tracker.register(compensator)` closure on live txn. 5 files: table+35, engine/base+77, sqlite+15, postgres+10, insert+43 (no delete.py). |
+
+> **Both PASS — gate did NOT differentiate (again).** The graduated desync gates
+> were built to break the insert-only fix both models shipped on the prior piccolo
+> task; this time both produced a *general* fix covering all three mutation paths,
+> so both pass all 7 gates. Turn counts were not recorded (`n/r`).
+>
+> **Only signal this run: time + architecture.** B was ~3 min faster (10m15s vs
+> 13m22s) and kept a lighter central layer (engine/base +77 vs A's +143), with no
+> `delete.py` changes. A pushed compensation into the query builder (`delete.py
+> +32`); B bound compensator closures at the call site and registered them on a
+> `_state_tracker`. Same passing outcome, two distinct architectures — the
+> pass/fail gate can't see either the time gap or the design divergence.
 
 ## Why this task should differentiate (unlike the shipped piccolo task)
 
