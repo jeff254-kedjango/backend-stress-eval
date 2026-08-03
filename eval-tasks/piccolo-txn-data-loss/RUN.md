@@ -17,7 +17,7 @@ sentinels are all different. The anyio sentinels (`_drop_loop_run_vars`,
 | Source dir | `anyio-lifecycle-leak-v2/` | `eval-tasks/piccolo-txn-data-loss/` |
 | Package | `anyio==4.14.2` | `piccolo[sqlite]==1.36.0` |
 | Sentinels | `_drop_loop_run_vars`, `_run_vars.pop` | **`register_inserted`, `_inserted_objects`** |
-| Bug-live check | — | `minimal_repro.py` prints `orders stored: 0` |
+| Bug-live check | — | inline RETRY probe prints `stored:0` (no repro shipped) |
 | Grader | `scripts/grade_evals.sh` | `scripts/grade_piccolo_evals.sh` |
 
 **Do NOT use `_exists_in_db` as a sentinel** — it is stock piccolo (appears 7×
@@ -28,24 +28,20 @@ OUR fix code and exist nowhere in stock piccolo.
 
 ## Phase 1 — Build both working folders
 
-```bash
-# Model A
-mkdir -p ~/piccolo-eval-task-A
-cp ~/backend-stress-eval/eval-tasks/piccolo-txn-data-loss/initial-prompt.md ~/piccolo-eval-task-A/
-cp ~/backend-stress-eval/eval-tasks/piccolo-txn-data-loss/minimal_repro.py  ~/piccolo-eval-task-A/
-python3.12 -m venv ~/piccolo-eval-task-A/.venv
-~/piccolo-eval-task-A/.venv/bin/pip install -q "piccolo[sqlite]==1.36.0"
+Use `make-eval-dirs.sh` — it copies ONLY the prompt, builds the venv, and runs
+an inline bug-is-live probe. **No reproducer is shipped.** Handing the model a
+runnable `minimal_repro.py` pre-localizes the bug (does the hardest part of the
+L3 task for it) and collapses every task to "both pass". The model gets the
+symptom-only prompt and must localize the loss itself.
 
-# Model B (identical)
-mkdir -p ~/piccolo-eval-task-B
-cp ~/backend-stress-eval/eval-tasks/piccolo-txn-data-loss/initial-prompt.md ~/piccolo-eval-task-B/
-cp ~/backend-stress-eval/eval-tasks/piccolo-txn-data-loss/minimal_repro.py  ~/piccolo-eval-task-B/
-python3.12 -m venv ~/piccolo-eval-task-B/.venv
-~/piccolo-eval-task-B/.venv/bin/pip install -q "piccolo[sqlite]==1.36.0"
+```bash
+cd ~/backend-stress-eval/eval-tasks/piccolo-txn-data-loss
+./make-eval-dirs.sh A B     # builds ~/piccolo-eval-task-A and -B
 ```
 
-Only 2 files copied — prompt + reproducer. NOT `grading-criteria.md`,
-`README.md`, or this `RUN.md`.
+Only 1 file is copied into each dir — `initial-prompt.md`. NOT `minimal_repro.py`,
+`grading-criteria.md`, `README.md`, or this `RUN.md`. The script's leak-check
+refuses to build if any of those land in the dir.
 
 > **Build venvs with a system `python3.12`, not the harness `.venv`.** If the
 > active shell has the harness venv sourced, `deactivate` first — otherwise
@@ -54,13 +50,12 @@ Only 2 files copied — prompt + reproducer. NOT `grading-criteria.md`,
 > long as it is not the harness venv's python.
 
 ```bash
-# Verify contents — expect exactly: .venv  initial-prompt.md  minimal_repro.py
+# Verify contents — expect exactly: .venv  initial-prompt.md   (NO repro)
 ls -A ~/piccolo-eval-task-A ~/piccolo-eval-task-B
-
-# Confirm the bug is live in each (expect "orders stored: 0" both times)
-~/piccolo-eval-task-A/.venv/bin/python ~/piccolo-eval-task-A/minimal_repro.py
-~/piccolo-eval-task-B/.venv/bin/python ~/piccolo-eval-task-B/minimal_repro.py
 ```
+
+`make-eval-dirs.sh` already confirmed the bug is live in each venv via its
+inline RETRY probe (`stored:0`). There is no repro file to run by hand.
 
 ## Phase 2 — Hide solution sources
 

@@ -38,24 +38,32 @@ A/B run decides whether it actually differentiates.
 
 ## The task, in golden-standard format
 
-- `initial-prompt.md` — symptom-only. Describes only "records disappear after a
-  rolled-back transaction, retry reports success, tests pass." Names NOTHING
-  about the cause: no `_exists_in_db`, no insert-vs-update, no phantom id, no
-  flag, no rollback-reset. Audited against a giveaway list. The model must
-  localize the loss itself.
-- `grading-criteria.md` — prose outcome expectations: the record is reliably
-  stored, normal persistence unchanged (no duplicates, updates still update),
-  fix at the source (not masked in caller code), no new failure, stock current
-  stable.
-- `minimal_repro.py` — standalone reproducer, one dependency (`piccolo[sqlite]`,
-  self-contained on-disk SQLite, no server). Reads like ordinary app code;
-  prints the stored-record count (0, expected 1).
+The model receives exactly **one** file: the symptom-only prompt. No reproducer
+is shipped — handing the model a runnable `minimal_repro.py` pre-localizes the
+bug (does the hardest part of an L3 task for it) and collapses every task to
+"both models pass, no differentiation". The model must localize the loss itself
+from symptoms alone.
+
+- `initial-prompt.md` — **the only file the model gets.** Symptom-only.
+  Describes only "records disappear after a rolled-back transaction, retry
+  reports success, tests pass." Names NOTHING about the cause: no
+  `_exists_in_db`, no insert-vs-update, no phantom id, no flag, no
+  rollback-reset. Audited against a giveaway list.
+- `grading-criteria.md` — harness-side only, never shipped. Prose outcome
+  expectations: the record is reliably stored, normal persistence unchanged (no
+  duplicates, updates still update), fix at the source (not masked in caller
+  code), no new failure, stock current stable.
+- The bug-is-live check is an **inline probe** inside `make-eval-dirs.sh` (and
+  the grader's own independent probe) — not a file in the model's dir.
+- `results.md` — per-task run log: model, protocol (prompt-only vs assisted),
+  time-to-fix, turns, verdict, and the A-vs-B fix comparison.
 
 ## Running it (clean-room isolation)
 
 `make-eval-dirs.sh` builds an isolated working dir per model with only the
-prompt + reproducer + a piccolo 1.36.0 venv to patch, and refuses to build if
-the prompt contains any cause-revealing giveaway:
+prompt + a piccolo 1.36.0 venv to patch. It confirms the bug is live via an
+inline probe (no repro file), and refuses to build if the prompt contains any
+cause-revealing giveaway:
 
 ```bash
 ./make-eval-dirs.sh A B        # builds ~/piccolo-eval-task-A and -B

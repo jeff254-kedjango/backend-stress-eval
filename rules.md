@@ -76,11 +76,20 @@ No guess-and-rerun. No parallel speculative fixes. No theorizing before the fail
 
 This rule is doubly important here because the whole project's thesis (see `discovery-strategy.md` §7, §9) is that hard bugs mislead theorizers who skip measurement.
 
+## Rule 10 — Prompt-only tasks; measure time-to-fix
+
+Every eval task ships the model **exactly one file: `initial-prompt.md`** (symptom-only). **Never ship a reproducer** (`minimal_repro.py` or equivalent) into a model's working dir.
+
+* A runnable reproducer pre-localizes the bug — it does the hardest part of an L3 task (finding *where* the fault originates) for the model, collapsing every task to "both models pass, no differentiation." That defeats the eval.
+* The "bug is live" check must be an **inline probe** inside `make-eval-dirs.sh`, and the **grader must use its own independent probe** — never a model-side file. If a grader currently runs the model's reproducer, rewrite it to be repro-independent before shipping prompt-only.
+* Keep `grading-criteria.md`, rubrics, findings, and graders **out** of the model dir; the build script's leak-check must list the reproducer among the forbidden files.
+* **Time-to-fix and turn count are first-class metrics**, recorded by hand in each task's `results.md`. Same pass/fail grade with very different effort *is* differentiation (see `discovery-strategy.md` §7: "the models solve the problem in 4 minutes… that is too small to measure feedback"). Assisted (with-repro) times are not comparable to prompt-only and must be flagged as such.
+
 ---
 
 ## Enforcement
 
-* Every plan, PR, and review must implicitly satisfy all nine rules.
+* Every plan, PR, and review must implicitly satisfy all ten rules.
 * If a rule is intentionally deviated from, the deviation must be called out and justified in the change itself.
 * `discovery-strategy.md` references this file; both are canonical.
 

@@ -2,9 +2,15 @@
 # make-eval-dirs.sh — assemble clean, answer-free working dirs for the run.
 #
 # Each ~/piccolo-eval-task-<TAG> gets ONLY what a task-taker may see:
-#   - initial-prompt.md   (symptom-only)
-#   - minimal_repro.py
+#   - initial-prompt.md   (symptom-only — the ONE file the model receives)
 #   - .venv/ with piccolo[sqlite]==1.36.0 installed (something to patch)
+#
+# NO reproducer is shipped. Handing the model a runnable minimal_repro.py
+# pre-localizes the bug — it does the hardest part of the L3 task (finding
+# where the loss originates) for the model, which collapses every task to
+# "both pass, no differentiation". The model gets symptoms only and must
+# localize the loss itself. The bug-is-live sanity check below runs an
+# INLINE probe against the fresh venv; it is never written to the model dir.
 #
 # The guard refuses to build if the prompt names the cause, or if any
 # answer-revealing file lands in the model's dir.
@@ -27,12 +33,10 @@ if ! command -v "$PY" >/dev/null 2>&1; then
     exit 2
 fi
 
-for f in initial-prompt.md minimal_repro.py; do
-    if [[ ! -f "$HERE/$f" ]]; then
-        echo "error: expected source file missing: $HERE/$f" >&2
-        exit 2
-    fi
-done
+if [[ ! -f "$HERE/initial-prompt.md" ]]; then
+    echo "error: expected source file missing: $HERE/initial-prompt.md" >&2
+    exit 2
+fi
 
 # Guard: the prompt must reveal only the SYMPTOM. Any term that points at the
 # cause (the stale persistence flag, the insert-vs-update decision, the phantom
@@ -52,6 +56,35 @@ for banned in \
     fi
 done
 
+# INLINE bug-is-live probe. Mirrors the RETRY gate in
+# scripts/grade_piccolo_evals.sh. Run against the fresh venv to confirm the
+# loss is present BEFORE the model touches it. NEVER written to the model dir.
+read -r -d '' LIVE_PROBE <<'PY' || true
+import asyncio, os, tempfile
+from piccolo.columns import Varchar
+from piccolo.engine.sqlite import SQLiteEngine
+from piccolo.table import Table
+
+async def main():
+    p = tempfile.mktemp(suffix=".sqlite")
+    DB = SQLiteEngine(path=p)
+    class Rec(Table, db=DB):
+        ref = Varchar()
+    await Rec.create_table(if_not_exists=True)
+    r = Rec(ref="retry")
+    try:
+        async with DB.transaction():
+            await r.save(); raise RuntimeError("x")
+    except RuntimeError:
+        pass
+    await r.save()
+    stored = await Rec.count().where(Rec.ref == "retry")
+    os.path.exists(p) and os.unlink(p)
+    print(f"stored:{stored}")
+
+asyncio.run(main())
+PY
+
 for TAG in "${TAGS[@]}"; do
     DEST="$HOME/piccolo-eval-task-${TAG}"
     if [[ -e "$DEST" ]]; then
@@ -61,7 +94,6 @@ for TAG in "${TAGS[@]}"; do
     echo "==> building $DEST"
     mkdir -p "$DEST"
     cp "$HERE/initial-prompt.md" "$DEST/initial-prompt.md"
-    cp "$HERE/minimal_repro.py" "$DEST/minimal_repro.py"
 
     echo "    creating venv + installing piccolo[sqlite]==${PICCOLO_VERSION}"
     "$PY" -m venv "$DEST/.venv"
@@ -72,20 +104,23 @@ for TAG in "${TAGS[@]}"; do
         echo "error: piccolo/aiosqlite not importable in $DEST/.venv" >&2
         exit 2
     fi
-    # Sanity: the reproducer must actually exhibit the loss on this fresh venv.
-    out="$("$DEST/.venv/bin/python" "$DEST/minimal_repro.py" 2>/dev/null || true)"
-    if [[ "$out" != *"orders stored: 0"* ]]; then
-        echo "error: reproducer did not exhibit the loss in $DEST (got: $out)" >&2
+    # Sanity: the loss must actually be present on this fresh venv. Probe runs
+    # inline — nothing is written into $DEST beyond the prompt.
+    out="$("$DEST/.venv/bin/python" -c "$LIVE_PROBE" 2>/dev/null || true)"
+    if [[ "$out" != *"stored:0"* ]]; then
+        echo "error: bug not live in $DEST (probe got: $out, expected stored:0)" >&2
         exit 2
     fi
-    for leaked in measure.py RUBRIC.md grade.py grading-criteria.md \
-        findings.md README.md RUN.md probes.py; do
+    # The model dir must contain ONLY the prompt + venv. Anything else — a
+    # reproducer, rubric, findings, or grader — is a leak.
+    for leaked in minimal_repro.py measure.py RUBRIC.md grade.py \
+        grading-criteria.md findings.md README.md RUN.md probes.py; do
         if [[ -e "$DEST/$leaked" ]]; then
             echo "error: leak — $leaked ended up in $DEST" >&2
             exit 2
         fi
     done
-    echo "    OK: $DEST ready (prompt + minimal_repro.py + piccolo ${PICCOLO_VERSION}); loss confirmed"
+    echo "    OK: $DEST ready (prompt + piccolo ${PICCOLO_VERSION}); loss confirmed inline"
 done
 
 echo

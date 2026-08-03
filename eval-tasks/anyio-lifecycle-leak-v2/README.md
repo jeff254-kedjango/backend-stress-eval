@@ -10,13 +10,17 @@
 - `initial-prompt.md` — the prompt given to the model. Symptom + goal only:
   no file names, no scaffolding instructions, no hint at the root cause. It
   reads like a real "our CI is leaking memory" bug report.
-- `grading-criteria.md` — prose outcome expectations a human reviewer checks
-  by using the result (leak stays flat over a long run, fix at the right
-  layer, no throughput regression, reproduces on stock current stable). No
-  code, no numeric thresholds.
-- `minimal_repro.py` — the standalone reproducer that sits in the model's
-  working dir. Ten lines, one dependency; running it exhibits the steady
-  per-iteration growth.
+- `grading-criteria.md` — harness-side only, never shipped. Prose outcome
+  expectations a human reviewer checks by using the result (leak stays flat over
+  a long run, fix at the right layer, no throughput regression, reproduces on
+  stock current stable). No code, no numeric thresholds.
+- `results.md` — per-task run log: model, protocol, time-to-fix, turns, verdict.
+
+The model receives exactly **one** file: `initial-prompt.md`. No reproducer is
+shipped — handing the model a runnable `minimal_repro.py` pre-localizes the leak
+and collapses the task to "both pass, no differentiation". The bug-is-live check
+is an **inline probe** in `make-eval-dirs.sh` (loop-count) and the grader runs
+its own independent workload — neither is a file in the model's dir.
 
 That is the whole task. The reviewer's whiteboard example is the template:
 describe the problem and the desired outcome, and let a human grade the
@@ -40,9 +44,10 @@ Two reasons, both fixed here:
 ## Running it (clean-room isolation)
 
 The model must not see anything that reveals the fix. `make-eval-dirs.sh`
-builds an isolated working dir per model containing only the prompt + the
-reproducer + an anyio 4.14.2 venv to patch, and refuses to build if the
-prompt still contains a v1 giveaway phrase:
+builds an isolated working dir per model containing only the prompt + an anyio
+4.14.2 venv to patch. It confirms the leak is live via an inline loop-count
+probe (no repro file) and refuses to build if the prompt still contains a v1
+giveaway phrase:
 
 ```bash
 ./make-eval-dirs.sh A B        # builds ~/anyio-eval-task-A and -B

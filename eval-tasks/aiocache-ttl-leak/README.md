@@ -24,13 +24,18 @@ current default branch; no prior issue/PR found (novelty checked).
   climbs, tests green, bounded keyset). Does NOT name the cache internals,
   the handler dict, TimerHandle, expiry timers, or the refresh-without-ttl
   trigger. The model must localize the leak itself.
-- `grading-criteria.md` — prose outcome expectations a human reviewer checks:
-  memory flat over a long run, fix inside the backend at the source, cached
-  values still correct + TTLs still expire, refresh hot path not slowed,
-  reproduces/resolves on stock current stable.
-- `minimal_repro.py` — the standalone reproducer in the model's working dir.
-  One dependency, no framework; models a real "cache with ttl, refresh without
-  ttl" workload that drives RSS up in a straight line.
+- `grading-criteria.md` — harness-side only, never shipped. Prose outcome
+  expectations a human reviewer checks: memory flat over a long run, fix inside
+  the backend at the source, cached values still correct + TTLs still expire,
+  refresh hot path not slowed, reproduces/resolves on stock current stable.
+- `results.md` — per-task run log: model, protocol, time-to-fix, turns, verdict.
+
+The model receives exactly **one** file: `initial-prompt.md`. No reproducer is
+shipped — handing the model a runnable `minimal_repro.py` pre-localizes the leak
+(does the hardest part of the task for it) and collapses every task to "both
+pass, no differentiation". The bug-is-live check is an **inline probe** inside
+`make-eval-dirs.sh` (and the grader's own independent PROBE), never a file in
+the model's dir.
 
 ## Why this task (vs. the anyio one)
 
@@ -45,8 +50,9 @@ task suitability) — the fix is a one-liner, so the open risk is the same
 ## Running it (clean-room isolation)
 
 `make-eval-dirs.sh` builds an isolated working dir per model containing only
-the prompt + reproducer + an aiocache 0.12.3 venv to patch, and refuses to
-build if the prompt still contains a cause-revealing giveaway phrase:
+the prompt + an aiocache 0.12.3 venv to patch. It confirms the leak is live via
+an inline probe (no repro file) and refuses to build if the prompt still
+contains a cause-revealing giveaway phrase:
 
 ```bash
 ./make-eval-dirs.sh A B        # builds ~/aiocache-eval-task-A and -B
