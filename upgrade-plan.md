@@ -158,7 +158,8 @@ recorded in `difficulty-attempts.jsonl`. The candidate passes iff the
   author's independent probe (the same probe the grader will use) to
   transition from FAIL to PASS.
 - A session that exceeds a 3-hour ceiling without producing a passing
-  diff counts as `>= 180 min` for the median.
+  diff is terminated (`subprocess.run(timeout=)` — SIGKILL at the
+  ceiling) and counts as `>= 180 min` for the median.
 - Sessions run in isolated ephemeral environments (no shared cache,
   no access to prior attempts, no access to the issue thread).
 

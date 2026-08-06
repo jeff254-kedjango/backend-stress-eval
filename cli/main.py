@@ -27,6 +27,13 @@ from core.affidavit import (
     AffidavitError,
     validate_affidavit,
 )
+from core.difficulty import (
+    ATTEMPTS_FILENAME,
+    DIFFICULTY_MIN_MINUTES,
+    DIFFICULTY_N_ATTEMPTS,
+    DifficultyError,
+    run_difficulty_check,
+)
 from harnesses.discovery import (
     DEFAULT_ITERATIONS_L1,
     DEFAULT_ROUNDS_L2,
@@ -45,6 +52,8 @@ EXIT_UNKNOWN_PLUGIN = 3
 EXIT_INSTALL_FAILED = 4
 EXIT_ALREADY_EXISTS = 5
 EXIT_AFFIDAVIT_INVALID = 6
+EXIT_DIFFICULTY_PRECONDITION = 7
+EXIT_DIFFICULTY_REJECT = 8
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +333,38 @@ def _cmd_affidavit(args: argparse.Namespace, _manifests: Mapping[str, Manifest])
 
 
 # ---------------------------------------------------------------------------
+# `bse difficulty-check <candidate-dir>` — Gate 2 of the sourcing gates.
+#
+# Drives N=3 headless `claude -p` sessions in isolated tmpdirs, runs the
+# candidate's independent probe.sh after each, and rejects if the median
+# time-to-fix is under 60 minutes. See upgrade-plan.md §4 Gate 2 and
+# rules.md Rule 12 for the standing rules. Two distinct nonzero exits:
+# preconditions failed (missing files, no claude binary) vs. the gate
+# ran to completion and REJECTed — they are operationally different, so
+# the operator can key alerting off the difference.
+# ---------------------------------------------------------------------------
+def _cmd_difficulty(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    candidate_dir = Path(args.candidate_dir)
+    try:
+        result = run_difficulty_check(
+            candidate_dir,
+            claude_bin=args.claude_bin,
+            write_ledger=not args.no_ledger,
+        )
+    except DifficultyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_DIFFICULTY_PRECONDITION
+
+    print(result.to_summary())
+    if not args.no_ledger:
+        print(f"→ appended {len(result.sessions)} row(s) to {candidate_dir / ATTEMPTS_FILENAME}")
+
+    if not result.passed:
+        return EXIT_DIFFICULTY_REJECT
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing.
 # ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
@@ -386,6 +427,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help=("Path to the candidate directory containing " f"{AFFIDAVIT_FILENAME}."),
     )
 
+    p_diff = subs.add_parser(
+        "difficulty-check",
+        help=(
+            f"Drive N={DIFFICULTY_N_ATTEMPTS} headless sessions and reject if "
+            f"median time-to-fix < {DIFFICULTY_MIN_MINUTES:.0f} min "
+            "(Gate 2 of the sourcing gates)."
+        ),
+    )
+    p_diff.add_argument(
+        "candidate_dir",
+        help=(
+            "Path to the candidate directory containing initial-prompt.md, "
+            "probe.sh (executable), and make-eval-dirs.sh (executable)."
+        ),
+    )
+    p_diff.add_argument(
+        "--claude-bin",
+        default="claude",
+        help="Path or PATH-name of the claude CLI (default 'claude').",
+    )
+    p_diff.add_argument(
+        "--no-ledger",
+        action="store_true",
+        help=(
+            "Do not append sessions to difficulty-attempts.jsonl. "
+            "Intended for dry-runs and tests."
+        ),
+    )
+
     return parser
 
 
@@ -401,6 +471,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_install(args, manifests)
     if args.cmd == "affidavit":
         return _cmd_affidavit(args, manifests)
+    if args.cmd == "difficulty-check":
+        return _cmd_difficulty(args, manifests)
     parser.print_help()
     return EXIT_USAGE
 
