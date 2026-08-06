@@ -17,10 +17,12 @@ argparse's own usage errors.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from core.affidavit import (
     AFFIDAVIT_FILENAME,
@@ -33,6 +35,11 @@ from core.difficulty import (
     DIFFICULTY_N_ATTEMPTS,
     DifficultyError,
     run_difficulty_check,
+)
+from core.writeup_audit import (
+    AUDIT_REPORT_FILENAME,
+    WriteupAuditError,
+    run_writeup_audit,
 )
 from harnesses.discovery import (
     DEFAULT_ITERATIONS_L1,
@@ -54,6 +61,8 @@ EXIT_ALREADY_EXISTS = 5
 EXIT_AFFIDAVIT_INVALID = 6
 EXIT_DIFFICULTY_PRECONDITION = 7
 EXIT_DIFFICULTY_REJECT = 8
+EXIT_WRITEUP_PRECONDITION = 9
+EXIT_WRITEUP_REJECT = 10
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +374,168 @@ def _cmd_difficulty(args: argparse.Namespace, _manifests: Mapping[str, Manifest]
 
 
 # ---------------------------------------------------------------------------
+# `bse scaffold-candidate <name>` — stamp out a candidate dir that already
+# satisfies the Gate 1 + Gate 2 + Gate 3 contract.
+#
+# Rationale: the candidate contract has grown across chunks A-C
+# (repro-affidavit.json, initial-prompt.md, probe.sh, make-eval-dirs.sh,
+# and now upstream_issue_url on the affidavit). An author starting fresh
+# would otherwise have to reverse-engineer it from doc pages. This verb
+# stamps out an empty-but-compliant skeleton; the author fills the
+# specifics. Mirrors `bse install` for plugins.
+# ---------------------------------------------------------------------------
+# Assembled as a JSON object at scaffold time (see _cmd_scaffold_candidate).
+# The long guidance strings live in module constants below so they don't
+# force a per-line noqa inside a triple-quoted template.
+_STUB_OBSERVED_GUIDANCE = (
+    "FILL IN 80-2000 chars describing what you PERSONALLY saw on-bench "
+    "at the pinned commit. This is written from your bench transcript, "
+    "NOT from the upstream issue thread. Rule 11."
+)
+_STUB_DIVERGENCE_GUIDANCE = (
+    "Empty string only if you have RE-READ the upstream issue and confirm "
+    "on-bench behaviour matches. Otherwise describe every respect in which "
+    "it differs. Rule 11."
+)
+
+_CAND_INITIAL_PROMPT_STUB = """# {name} — initial prompt
+
+FILL IN the symptom description in your own words, from your bench
+transcript. Do NOT paraphrase the upstream issue thread (Rule 13). Do
+NOT ship a runnable reproducer alongside this file (Rule 10).
+
+The model receives this file and nothing else.
+"""
+
+_CAND_PROBE_STUB = """#!/usr/bin/env bash
+# probe.sh — independent probe. Runs in the model-facing working
+# directory. Exit 0 iff the bug is fixed; exit non-zero otherwise.
+# Rule 10: this is the grader's probe, promoted to a candidate-level
+# artifact so `bse difficulty-check` can use it.
+#
+# FILL IN the probe logic. Example shapes:
+#   pytest -q                                  # for python fixes
+#   python -c 'import x; assert x.behaves()'   # for one-shot checks
+
+set -euo pipefail
+echo "probe.sh not yet implemented for {name}" >&2
+exit 2
+"""
+
+_CAND_MAKE_DIRS_STUB = """#!/usr/bin/env bash
+# make-eval-dirs.sh — populate the model-facing working directory.
+# Contract (Gate 2): receives <destdir> as $1; must copy in every file
+# the model may see, and NOTHING that would leak the fix (no probe.sh,
+# no grader, no rubric, no reproducer). Rule 10.
+#
+# The `bse difficulty-check` driver invokes this once per session.
+
+set -euo pipefail
+DEST="${{1:?usage: make-eval-dirs.sh <destdir>}}"
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+mkdir -p "$DEST"
+cp "$HERE/initial-prompt.md" "$DEST/initial-prompt.md"
+
+# FILL IN: install pinned deps, copy source under test, seed any fixtures.
+# Example:
+#   python3.12 -m venv "$DEST/.venv"
+#   "$DEST/.venv/bin/pip" install "the-package==X.Y.Z"
+
+echo "TODO: {name} make-eval-dirs.sh not yet complete" >&2
+exit 2
+"""
+
+
+def _cmd_scaffold_candidate(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    """Stamp out a compliant candidate skeleton under eval-tasks/<name>/."""
+    name: str = args.name
+    if not name.replace("-", "").replace("_", "").isalnum():
+        print(
+            f"error: candidate name {name!r} must be alnum + '-' / '_' only.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    target = Path("eval-tasks") / name
+    if target.exists():
+        print(
+            f"error: {target} already exists. Move it aside or pick another name.",
+            file=sys.stderr,
+        )
+        return EXIT_ALREADY_EXISTS
+
+    signer = args.signer or "FILL_YOUR_NAME"
+    target.mkdir(parents=True)
+    affidavit_stub = {
+        "schema_version": "2",
+        "pinned_commit": "FILL_IN_40_CHAR_LOWERCASE_HEX_SHA_HERE_XXXXX",
+        "repo_url": "https://github.com/FILL_OWNER/FILL_REPO",
+        "upstream_issue_url": "https://github.com/FILL_OWNER/FILL_REPO/issues/FILL_N",
+        "bench_transcript_path": "bench.cast",
+        "observed_behaviour": _STUB_OBSERVED_GUIDANCE,
+        "divergence_from_thread": _STUB_DIVERGENCE_GUIDANCE,
+        "upstream_status": "open",
+        "signed_by": signer,
+        "signed_at": "FILL_ISO_8601_TIMESTAMP_e.g._2026-08-06T14:32:00Z",
+    }
+    (target / AFFIDAVIT_FILENAME).write_text(
+        json.dumps(affidavit_stub, indent=2) + "\n", encoding="utf-8"
+    )
+    (target / "initial-prompt.md").write_text(
+        _CAND_INITIAL_PROMPT_STUB.format(name=name), encoding="utf-8"
+    )
+    probe = target / "probe.sh"
+    probe.write_text(_CAND_PROBE_STUB.format(name=name), encoding="utf-8")
+    probe.chmod(probe.stat().st_mode | 0o111)
+    mked = target / "make-eval-dirs.sh"
+    mked.write_text(_CAND_MAKE_DIRS_STUB.format(name=name), encoding="utf-8")
+    mked.chmod(mked.stat().st_mode | 0o111)
+
+    print(f"→ scaffolded {target}/")
+    print("  Next steps:")
+    print(f"    1. Fill in {target}/repro-affidavit.json (pin, URLs, observed_behaviour)")
+    print(f"    2. Record bench: asciinema rec {target}/bench.cast")
+    print(f"    3. Implement {target}/make-eval-dirs.sh and {target}/probe.sh")
+    print(f"    4. Write {target}/initial-prompt.md in your own words")
+    print(f"    5. bse affidavit {target}")
+    print(f"    6. bse difficulty-check {target}")
+    print(f"    7. bse writeup-audit {target}")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# `bse writeup-audit <candidate-dir>` — Gate 3 of the sourcing gates.
+#
+# Fetches the affidavit-linked upstream issue (live or snapshot), extracts
+# every ≥ 8-word contiguous phrase from the candidate's writeup files, and
+# flags any that appear verbatim in the upstream text. See upgrade-plan.md
+# §4 Gate 3 and rules.md Rule 13.
+# ---------------------------------------------------------------------------
+def _cmd_writeup_audit(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    candidate_dir = Path(args.candidate_dir)
+    if not candidate_dir.is_dir():
+        print(f"error: {candidate_dir} is not a directory.", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        report = run_writeup_audit(
+            candidate_dir,
+            write_report=not args.no_report,
+            fetch_live=not args.snapshot_only,
+        )
+    except WriteupAuditError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_WRITEUP_PRECONDITION
+
+    print(report.to_text(), end="")
+    if not args.no_report:
+        print(f"→ wrote {candidate_dir / AUDIT_REPORT_FILENAME}")
+    if not report.passed:
+        return EXIT_WRITEUP_REJECT
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing.
 # ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
@@ -456,25 +627,75 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p_sc = subs.add_parser(
+        "scaffold-candidate",
+        help=(
+            "Stamp out a compliant candidate skeleton under eval-tasks/<name>/. "
+            "See manual.md and rules.md Rules 11-13 for the contract."
+        ),
+    )
+    p_sc.add_argument(
+        "name",
+        help="Candidate directory name (alnum, '-', '_' only).",
+    )
+    p_sc.add_argument(
+        "--signer",
+        default=None,
+        help="Prefill the affidavit's signed_by field.",
+    )
+
+    p_wa = subs.add_parser(
+        "writeup-audit",
+        help=(
+            "Diff a candidate's writeup files against the upstream issue and "
+            "flag verbatim overlaps (Gate 3 of the sourcing gates)."
+        ),
+    )
+    p_wa.add_argument(
+        "candidate_dir",
+        help="Path to the candidate directory (containing a signed affidavit).",
+    )
+    p_wa.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Do not write writeup-audit.txt (dry-run mode).",
+    )
+    p_wa.add_argument(
+        "--snapshot-only",
+        action="store_true",
+        help=(
+            "Skip the live GitHub fetch; audit against the committed "
+            "upstream-issue-snapshot.txt. Fails if no snapshot exists."
+        ),
+    )
+
     return parser
+
+
+_DISPATCH: Mapping[str, Callable[[argparse.Namespace, Mapping[str, Manifest]], int]] = (
+    MappingProxyType(
+        {
+            "list": _cmd_list,
+            "run": _cmd_run,
+            "install": _cmd_install,
+            "affidavit": _cmd_affidavit,
+            "difficulty-check": _cmd_difficulty,
+            "scaffold-candidate": _cmd_scaffold_candidate,
+            "writeup-audit": _cmd_writeup_audit,
+        }
+    )
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     manifests = load_manifests()
-    if args.cmd == "list":
-        return _cmd_list(args, manifests)
-    if args.cmd == "run":
-        return _cmd_run(args, manifests)
-    if args.cmd == "install":
-        return _cmd_install(args, manifests)
-    if args.cmd == "affidavit":
-        return _cmd_affidavit(args, manifests)
-    if args.cmd == "difficulty-check":
-        return _cmd_difficulty(args, manifests)
-    parser.print_help()
-    return EXIT_USAGE
+    handler = _DISPATCH.get(args.cmd)
+    if handler is None:
+        parser.print_help()
+        return EXIT_USAGE
+    return handler(args, manifests)
 
 
 if __name__ == "__main__":

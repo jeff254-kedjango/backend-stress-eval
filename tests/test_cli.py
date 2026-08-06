@@ -132,6 +132,50 @@ class TestInstall:
 # ---------------------------------------------------------------------------
 
 
+class TestScaffoldCandidate:
+    """The scaffolder is the ergonomics multiplier for the three sourcing gates.
+
+    We check the produced skeleton contains the four required files, the
+    two shell scripts are executable, and the affidavit stub is JSON-shaped
+    (not yet valid — it's a template).
+    """
+
+    def test_rejects_invalid_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        rc = main(["scaffold-candidate", "not/a/name"])
+        assert rc == EXIT_USAGE
+
+    def test_stamps_out_four_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        rc = main(["scaffold-candidate", "my-bug"])
+        assert rc == EXIT_OK
+        target = tmp_path / "eval-tasks" / "my-bug"
+        for name in (
+            "repro-affidavit.json",
+            "initial-prompt.md",
+            "probe.sh",
+            "make-eval-dirs.sh",
+        ):
+            assert (target / name).is_file(), f"missing {name}"
+        # Shell scripts are executable.
+        import os as _os
+
+        assert _os.access(target / "probe.sh", _os.X_OK)
+        assert _os.access(target / "make-eval-dirs.sh", _os.X_OK)
+        # Affidavit stub parses as JSON.
+        import json as _json
+
+        _json.loads((target / "repro-affidavit.json").read_text())
+
+    def test_refuses_existing_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "eval-tasks" / "existing").mkdir(parents=True)
+        rc = main(["scaffold-candidate", "existing"])
+        assert rc == EXIT_ALREADY_EXISTS
+
+
 class TestSafeVersion:
     def test_accepts_valid_pep440_shapes(self) -> None:
         for v in ("0.141.1", "5.4.0", "2.0.0rc1", "1.0", "1.0+local", "1.0-alpha"):

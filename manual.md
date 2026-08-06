@@ -127,7 +127,25 @@ source .venv/bin/activate
 ### 3.1 The `bse` CLI — one command per framework (the fast path)
 
 After `uv pip install -e ".[dev,fastapi]"` the `bse` executable is on your
-venv `PATH`. Three subcommands.
+venv `PATH`. Seven subcommands:
+
+* `bse list` / `bse run <plugin>` / `bse install <plugin>` — the harness /
+  plugin flow (below).
+* `bse scaffold-candidate <name>` / `bse affidavit <dir>` /
+  `bse difficulty-check <dir>` / `bse writeup-audit <dir>` — the three
+  sourcing gates and their scaffolder. See `upgrade-plan.md` §4 and
+  `rules.md` Rules 11-13 for the mechanics; the workflow is:
+
+  1. `bse scaffold-candidate my-bug` → creates `eval-tasks/my-bug/` with
+     stubs for the affidavit, initial-prompt, probe.sh, make-eval-dirs.sh.
+  2. Fill in the stubs; record `bench.cast` with `asciinema rec`.
+  3. `bse affidavit eval-tasks/my-bug` — Gate 1.
+  4. `bse difficulty-check eval-tasks/my-bug` — Gate 2 (N=3 real
+     headless sessions; only proceed if median ≥ 60 min).
+  5. `bse writeup-audit eval-tasks/my-bug` — Gate 3.
+
+  All three gates use distinct nonzero exit codes for precondition failure
+  vs. gate reject (see `cli/main.py`).
 
 **See what's available:**
 

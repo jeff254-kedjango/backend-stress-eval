@@ -76,6 +76,7 @@ def _write_affidavit(
         "schema_version": AFFIDAVIT_SCHEMA_VERSION,
         "pinned_commit": _GOOD_SHA,
         "repo_url": "https://github.com/example/project",
+        "upstream_issue_url": "https://github.com/example/project/issues/42",
         "bench_transcript_path": transcript_relpath,
         "observed_behaviour": (
             "At the pinned commit, running the repro script raised an "
@@ -176,6 +177,30 @@ class TestValidateRepoUrl:
         )
         failures = validate_affidavit(tmp_path)
         assert any(f.field == "repo_url" for f in failures)
+
+
+class TestValidateUpstreamIssueUrl:
+    def test_empty_rejected(self, tmp_path: Path) -> None:
+        _write_affidavit(tmp_path, overrides={"upstream_issue_url": "  "})
+        failures = validate_affidavit(tmp_path)
+        assert any(f.field == "upstream_issue_url" for f in failures)
+
+    def test_non_issue_url_rejected(self, tmp_path: Path) -> None:
+        # A repo root, not an issue.
+        _write_affidavit(
+            tmp_path,
+            overrides={"upstream_issue_url": "https://github.com/example/project"},
+        )
+        failures = validate_affidavit(tmp_path)
+        assert any(f.field == "upstream_issue_url" for f in failures)
+
+    def test_shell_metacharacter_rejected(self, tmp_path: Path) -> None:
+        _write_affidavit(
+            tmp_path,
+            overrides={"upstream_issue_url": "https://github.com/example/project/issues/1;rm"},
+        )
+        failures = validate_affidavit(tmp_path)
+        assert any(f.field == "upstream_issue_url" for f in failures)
 
 
 class TestValidateObservedBehaviour:

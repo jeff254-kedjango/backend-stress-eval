@@ -49,7 +49,11 @@ __all__ = [
 # the required field set.
 # ---------------------------------------------------------------------------
 AFFIDAVIT_FILENAME: Final = "repro-affidavit.json"
-AFFIDAVIT_SCHEMA_VERSION: Final = "1"
+# v2 (2026-08-06, chunk C) adds the required `upstream_issue_url` field so
+# the writeup audit (Gate 3) can fetch the linked thread. v1 affidavits do
+# not carry that field and are rejected by the validator; migration is a
+# one-line addition per candidate.
+AFFIDAVIT_SCHEMA_VERSION: Final = "2"
 
 # Transcript size cap. Real asciinema recordings of a reproduction step run
 # well under this; anything larger is either a mistake or malicious.
@@ -80,6 +84,7 @@ _REQUIRED_FIELDS: Final = (
     "schema_version",
     "pinned_commit",
     "repo_url",
+    "upstream_issue_url",
     "bench_transcript_path",
     "observed_behaviour",
     "divergence_from_thread",
@@ -104,6 +109,7 @@ class Affidavit:
     schema_version: str
     pinned_commit: str
     repo_url: str
+    upstream_issue_url: str
     bench_transcript_path: str
     observed_behaviour: str
     divergence_from_thread: str
@@ -169,6 +175,7 @@ def load_affidavit(candidate_dir: Path, /) -> Affidavit:
         schema_version=raw["schema_version"],
         pinned_commit=raw["pinned_commit"],
         repo_url=raw["repo_url"],
+        upstream_issue_url=raw["upstream_issue_url"],
         bench_transcript_path=raw["bench_transcript_path"],
         observed_behaviour=raw["observed_behaviour"],
         divergence_from_thread=raw["divergence_from_thread"],
@@ -222,6 +229,10 @@ def validate_affidavit(candidate_dir: Path, /) -> list[ValidationFailure]:
     if url_failure is not None:
         failures.append(url_failure)
 
+    issue_failure = _validate_upstream_issue_url(aff.upstream_issue_url)
+    if issue_failure is not None:
+        failures.append(issue_failure)
+
     transcript_failure = _validate_transcript(
         candidate_dir=candidate_dir,
         transcript_path=aff.bench_transcript_path,
@@ -272,6 +283,42 @@ def _validate_repo_url(url: str) -> ValidationFailure | None:
             detail=(
                 f"contains unsafe characters {sorted(bad)!r}. "
                 "The URL is passed to git; shell metacharacters are refused."
+            ),
+        )
+    return None
+
+
+def _validate_upstream_issue_url(url: str) -> ValidationFailure | None:
+    """The issue URL fuels Gate 3 (writeup audit). Must resolve to an issue,
+    not a plain repo. GitHub is the only host recognised at v2; expanding to
+    GitLab / Bitbucket is a future schema bump.
+    """
+    if not url.strip():
+        return ValidationFailure(
+            field="upstream_issue_url",
+            detail=(
+                "empty. Provide the URL of the upstream issue this candidate "
+                "targets — Gate 3 diffs the writeup against its thread."
+            ),
+        )
+    bad = _UNSAFE_URL_CHARS.intersection(url)
+    if bad:
+        return ValidationFailure(
+            field="upstream_issue_url",
+            detail=(
+                f"contains unsafe characters {sorted(bad)!r}. "
+                "The URL is fetched over HTTP; shell metacharacters are refused."
+            ),
+        )
+    # Loose shape check — an "issue"-shaped URL contains /issues/<n>. We accept
+    # both github.com and api.github.com to keep the field forgiving; the
+    # writeup-audit resolver normalises to the API form.
+    if "/issues/" not in url:
+        return ValidationFailure(
+            field="upstream_issue_url",
+            detail=(
+                f"{url!r} does not look like an issue URL (missing '/issues/'). "
+                "Point at the GitHub issue, not the repo root."
             ),
         )
     return None
