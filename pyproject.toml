@@ -47,7 +47,11 @@ packages = ["core", "harnesses", "plugins", "cli"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = [".venv", "reports"]
+# ``investigations/`` is the hunt journal (see manual.md §2 and BACKPOCKET.md),
+# not shipped source — one-off probes, notebooks, and dead-end scripts kept as
+# working record. Excluding it from ruff keeps the gate honest about the code
+# that actually ships (core/, harnesses/, plugins/, cli/, tests/).
+extend-exclude = [".venv", "reports", "investigations"]
 
 [tool.ruff.lint]
 # E/F: pyflakes+pycodestyle, I: import sort, B: bugbear, UP: pyupgrade,

@@ -9,6 +9,7 @@ anyio holds flat (slope ~0, loops ~1); the stock leak climbs linearly
 Usage: <python> flatness_check.py [rounds]
 Emits one line of JSON so a caller can compare venvs.
 """
+
 from __future__ import annotations
 
 import gc
