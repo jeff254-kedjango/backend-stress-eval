@@ -29,6 +29,13 @@ from core.affidavit import (
     AffidavitError,
     validate_affidavit,
 )
+from core.differ import (
+    DIFF_REPORT_FILENAME,
+    DiffReport,
+    diff_report_dicts,
+    diff_reports,
+    load_report_json,
+)
 from core.difficulty import (
     ATTEMPTS_FILENAME,
     DIFFICULTY_MIN_MINUTES,
@@ -41,6 +48,7 @@ from core.divergence import (
     DivergenceError,
     run_divergence_probe,
 )
+from core.reporter import Report
 from core.writeup_audit import (
     AUDIT_REPORT_FILENAME,
     WriteupAuditError,
@@ -70,6 +78,8 @@ EXIT_WRITEUP_PRECONDITION = 9
 EXIT_WRITEUP_REJECT = 10
 EXIT_DIVERGENCE_PRECONDITION = 11
 EXIT_DIVERGENCE_REJECT = 12
+EXIT_DIFF_PRECONDITION = 13
+EXIT_DIFF_HAS_CHANGES = 14
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +553,130 @@ def _cmd_writeup_audit(args: argparse.Namespace, _manifests: Mapping[str, Manife
 
 
 # ---------------------------------------------------------------------------
+# `bse diff <plugin> --a X.Y.Z --b X.Y.Z` — cross-version differential runner.
+#
+# The highest-yield unsaturated discovery axis (upgrade-plan.md §7 T1.1).
+# Two operating modes:
+#
+#   In-process:  --a and --b are pip versions; pip-install and run discovery
+#                twice in this process, then diff the two dicts of reports.
+#   File-based:  --a-report and --b-report are paths to existing report.json
+#                files produced by earlier `bse run` invocations; diff them
+#                without re-running discovery.
+#
+# Exits:
+#   EXIT_OK               — diff produced, NO changes detected between versions
+#   EXIT_DIFF_HAS_CHANGES — diff produced, changes exist (surface for triage)
+#   EXIT_DIFF_PRECONDITION — plugin unknown / install failed / bad report path
+#
+# "Changes exist" is NOT a reject — the operator decides whether any row is
+# actually shippable. Diff is the finding; per upgrade-plan.md §7, nothing
+# here auto-packages anything.
+# ---------------------------------------------------------------------------
+def _cmd_diff(args: argparse.Namespace, manifests: Mapping[str, Manifest]) -> int:
+    if args.a_report or args.b_report:
+        return _cmd_diff_file_mode(args)
+    return _cmd_diff_in_process(args, manifests)
+
+
+def _cmd_diff_file_mode(args: argparse.Namespace) -> int:
+    if not (args.a_report and args.b_report):
+        print(
+            "error: --a-report and --b-report must both be provided in file mode.",
+            file=sys.stderr,
+        )
+        return EXIT_DIFF_PRECONDITION
+    path_a = Path(args.a_report)
+    path_b = Path(args.b_report)
+    for p in (path_a, path_b):
+        if not p.is_file():
+            print(f"error: {p} does not exist or is not a regular file.", file=sys.stderr)
+            return EXIT_DIFF_PRECONDITION
+    try:
+        layers_a = load_report_json(path_a)
+        layers_b = load_report_json(path_b)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_DIFF_PRECONDITION
+    diff = diff_report_dicts(
+        layers_a,
+        layers_b,
+        target_a=args.target_a or str(path_a),
+        target_b=args.target_b or str(path_b),
+    )
+    return _emit_diff(args, diff)
+
+
+def _cmd_diff_in_process(args: argparse.Namespace, manifests: Mapping[str, Manifest]) -> int:
+    name = args.plugin
+    if not name:
+        print(
+            "error: `bse diff <plugin>` requires a plugin name in in-process mode.",
+            file=sys.stderr,
+        )
+        return EXIT_DIFF_PRECONDITION
+    if name not in manifests:
+        print(f"error: unknown plugin {name!r}. Try 'bse list'.", file=sys.stderr)
+        return EXIT_DIFF_PRECONDITION
+    if not (args.a and args.b):
+        print(
+            "error: --a and --b (two version strings) are required in in-process mode.",
+            file=sys.stderr,
+        )
+        return EXIT_DIFF_PRECONDITION
+
+    manifest = manifests[name]
+    reports_a = _run_discovery_at_version(manifest, args.a, args)
+    if reports_a is None:
+        return EXIT_DIFF_PRECONDITION
+    reports_b = _run_discovery_at_version(manifest, args.b, args)
+    if reports_b is None:
+        return EXIT_DIFF_PRECONDITION
+
+    diff = diff_reports(
+        reports_a,
+        reports_b,
+        target_a=manifest.default_target_commit(args.a),
+        target_b=manifest.default_target_commit(args.b),
+    )
+    return _emit_diff(args, diff)
+
+
+def _run_discovery_at_version(
+    manifest: Manifest, version: str, args: argparse.Namespace
+) -> dict[str, Report] | None:
+    """Pip-install ``version`` then run discovery. Returns None on install failure."""
+    if not args.no_install:
+        rc = _pip_install_at_version(manifest, version)
+        if rc != EXIT_OK:
+            return None
+    target_commit = manifest.default_target_commit(version)
+    plugin = manifest.plugin_factory(manifest.default_app_factory)
+    variants = manifest.variants or None
+    variant_factory = (lambda af: manifest.plugin_factory(af)) if variants is not None else None
+    return run_discovery(
+        plugin=plugin,
+        target_commit=target_commit,
+        iterations_l1=args.iterations,
+        rounds_l2=args.rounds_l2,
+        rounds_l3=args.rounds_l3,
+        variants=variants,
+        variant_plugin_factory=variant_factory,
+    )
+
+
+def _emit_diff(args: argparse.Namespace, diff: DiffReport) -> int:
+    """Write the diff report and pick the exit code from `has_changes`."""
+    out_dir = Path(args.out) if args.out else Path("reports/diff")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / DIFF_REPORT_FILENAME
+    out_path.write_text(diff.to_json() + "\n", encoding="utf-8")
+    print(f"→ wrote {out_path}")
+    print(f"  {diff.target_a} → {diff.target_b}: {diff.summary_line()}")
+    return EXIT_DIFF_HAS_CHANGES if diff.has_changes else EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # `bse triage <candidate-dir>` — Gate 4 of the sourcing gates (divergence probe).
 #
 # Spawns N=3 headless `claude -p` diagnosis sessions in sealed tmpdirs,
@@ -704,6 +838,70 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p_di = subs.add_parser(
+        "diff",
+        help=(
+            "Diff a plugin's discovery report across two versions "
+            "(cross-version differential runner; Chunk E)."
+        ),
+    )
+    p_di.add_argument(
+        "plugin",
+        nargs="?",
+        default=None,
+        help="Plugin name (see 'bse list'). Omit in file mode (--a-report/--b-report).",
+    )
+    p_di.add_argument("--a", default=None, help="Version A (pip version string).")
+    p_di.add_argument("--b", default=None, help="Version B (pip version string).")
+    p_di.add_argument(
+        "--a-report",
+        default=None,
+        help="Path to an already-produced report.json for the A side (file mode).",
+    )
+    p_di.add_argument(
+        "--b-report",
+        default=None,
+        help="Path to an already-produced report.json for the B side (file mode).",
+    )
+    p_di.add_argument(
+        "--target-a",
+        default=None,
+        help="Human label for the A side in the diff report (file mode; default: path).",
+    )
+    p_di.add_argument(
+        "--target-b",
+        default=None,
+        help="Human label for the B side in the diff report (file mode; default: path).",
+    )
+    p_di.add_argument(
+        "--iterations",
+        type=int,
+        default=DEFAULT_ITERATIONS_L1,
+        help=f"Layer 1 iterations per side (default {DEFAULT_ITERATIONS_L1}).",
+    )
+    p_di.add_argument(
+        "--rounds-l2",
+        type=int,
+        default=DEFAULT_ROUNDS_L2,
+        help=f"Layer 2 rounds per side (default {DEFAULT_ROUNDS_L2}).",
+    )
+    p_di.add_argument(
+        "--rounds-l3",
+        type=int,
+        default=DEFAULT_ROUNDS_L3,
+        help=f"Layer 3 rounds per side (default {DEFAULT_ROUNDS_L3}).",
+    )
+    p_di.add_argument(
+        "--out",
+        default=None,
+        help="Output directory. Default: reports/diff.",
+    )
+    p_di.add_argument(
+        "--no-install",
+        action="store_true",
+        help="Skip pip installs; use whatever version is currently installed.",
+    )
+
     p_tr = subs.add_parser(
         "triage",
         help=(
@@ -737,6 +935,7 @@ _DISPATCH: Mapping[str, Callable[[argparse.Namespace, Mapping[str, Manifest]], i
             "install": _cmd_install,
             "affidavit": _cmd_affidavit,
             "difficulty-check": _cmd_difficulty,
+            "diff": _cmd_diff,
             "scaffold-candidate": _cmd_scaffold_candidate,
             "triage": _cmd_triage,
             "writeup-audit": _cmd_writeup_audit,

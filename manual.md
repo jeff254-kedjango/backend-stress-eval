@@ -127,7 +127,7 @@ source .venv/bin/activate
 ### 3.1 The `bse` CLI — one command per framework (the fast path)
 
 After `uv pip install -e ".[dev,fastapi]"` the `bse` executable is on your
-venv `PATH`. Eight subcommands:
+venv `PATH`. Nine subcommands:
 
 * `bse list` / `bse run <plugin>` / `bse install <plugin>` — the harness /
   plugin flow (below).
@@ -149,6 +149,15 @@ venv `PATH`. Eight subcommands:
 
   All four gates use distinct nonzero exit codes for precondition failure
   vs. gate reject (see `cli/main.py`).
+* `bse diff` — cross-version differential. Two modes:
+  `bse diff <plugin> --a <verA> --b <verB> --out DIR` (in-process: pip-
+  installs each version and re-runs discovery), or
+  `bse diff --a-report A.json --b-report B.json --out DIR` (file-mode:
+  diff two already-packaged `report.json` bundles). Writes
+  `diff-report.json` and prints a one-line summary; exits `EXIT_OK` on
+  no changes, `EXIT_DIFF_HAS_CHANGES` (14) when the diff is non-empty,
+  `EXIT_DIFF_PRECONDITION` (13) on bad inputs. The diff *is* the
+  finding — see `upgrade-plan.md` §7 T1.1.
 
 **See what's available:**
 
