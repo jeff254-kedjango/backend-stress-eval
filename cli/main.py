@@ -36,6 +36,11 @@ from core.difficulty import (
     DifficultyError,
     run_difficulty_check,
 )
+from core.divergence import (
+    TRIAGE_REPORT_FILENAME,
+    DivergenceError,
+    run_divergence_probe,
+)
 from core.writeup_audit import (
     AUDIT_REPORT_FILENAME,
     WriteupAuditError,
@@ -63,6 +68,8 @@ EXIT_DIFFICULTY_PRECONDITION = 7
 EXIT_DIFFICULTY_REJECT = 8
 EXIT_WRITEUP_PRECONDITION = 9
 EXIT_WRITEUP_REJECT = 10
+EXIT_DIVERGENCE_PRECONDITION = 11
+EXIT_DIVERGENCE_REJECT = 12
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +543,34 @@ def _cmd_writeup_audit(args: argparse.Namespace, _manifests: Mapping[str, Manife
 
 
 # ---------------------------------------------------------------------------
+# `bse triage <candidate-dir>` — Gate 4 of the sourcing gates (divergence probe).
+#
+# Spawns N=3 headless `claude -p` diagnosis sessions in sealed tmpdirs,
+# reads each session's diagnosis.json, and clusters by shared normalised-
+# word overlap. ≥ 2 clusters = DIVERGENT (proceed). 1 cluster = CONVERGENT
+# (reject). See upgrade-plan.md §6.
+# ---------------------------------------------------------------------------
+def _cmd_triage(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    candidate_dir = Path(args.candidate_dir)
+    try:
+        report = run_divergence_probe(
+            candidate_dir,
+            claude_bin=args.claude_bin,
+            write_report=not args.no_report,
+        )
+    except DivergenceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_DIVERGENCE_PRECONDITION
+
+    print(report.to_text(), end="")
+    if not args.no_report:
+        print(f"→ wrote {candidate_dir / TRIAGE_REPORT_FILENAME}")
+    if not report.passed:
+        return EXIT_DIVERGENCE_REJECT
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing.
 # ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
@@ -669,6 +704,28 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p_tr = subs.add_parser(
+        "triage",
+        help=(
+            "Divergence probe: spawn N=3 diagnosis sessions and reject "
+            "if they all converge on one root cause (Gate 4)."
+        ),
+    )
+    p_tr.add_argument(
+        "candidate_dir",
+        help="Path to the candidate directory containing a signed affidavit.",
+    )
+    p_tr.add_argument(
+        "--claude-bin",
+        default="claude",
+        help="Path or PATH-name of the claude CLI (default 'claude').",
+    )
+    p_tr.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Do not write triage-report.json (dry-run mode).",
+    )
+
     return parser
 
 
@@ -681,6 +738,7 @@ _DISPATCH: Mapping[str, Callable[[argparse.Namespace, Mapping[str, Manifest]], i
             "affidavit": _cmd_affidavit,
             "difficulty-check": _cmd_difficulty,
             "scaffold-candidate": _cmd_scaffold_candidate,
+            "triage": _cmd_triage,
             "writeup-audit": _cmd_writeup_audit,
         }
     )

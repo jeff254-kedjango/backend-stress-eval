@@ -291,10 +291,10 @@ commit → memory note (Rules 6 + 8).
 
 | Chunk | Content | Depends on | Why here |
 |-------|---------|------------|----------|
-| **A** | Gate 1 (repro affidavit) + `bse affidavit` | none | Closes the dramatiq-#431-class failure directly. Cheapest gate to build. Nothing else ships until this exists. |
-| **B** | Gate 2 (difficulty check) + `bse difficulty-check` | A | Requires an affidavit-approved candidate to run against. Expensive per candidate but pre-packaging. |
-| **C** | Gate 3 (own-words audit) + `bse writeup-audit` | A | Independent of B; can build in parallel if capacity allows. |
-| **D** | Divergence probe + `bse triage` (refined from T2.1) | A, B, C | Runs last of the four gates; benefits from filtering out easy or fabricated candidates first. |
+| **A** ✅ | Gate 1 (repro affidavit) + `bse affidavit` | none | Closes the dramatiq-#431-class failure directly. Cheapest gate to build. Nothing else ships until this exists. Shipped 2026-08-06 (b63a9fc). |
+| **B** ✅ | Gate 2 (difficulty check) + `bse difficulty-check` | A | Requires an affidavit-approved candidate to run against. Expensive per candidate but pre-packaging. Shipped 2026-08-06 (5ac3f69). |
+| **C** ✅ | Gate 3 (own-words audit) + `bse writeup-audit` + `bse scaffold-candidate` | A | Independent of B; can build in parallel if capacity allows. Shipped 2026-08-06 (f93a605) — includes scaffolder as ergonomics multiplier. |
+| **D** ✅ | Divergence probe + `bse triage` (refined from T2.1) | A, B, C | Runs last of the four gates; benefits from filtering out easy or fabricated candidates first. Shipped 2026-08-06. |
 | **E** | Differential-across-versions runner (T1.1) + `bse diff` | none, but sequenced here | Once the gates exist, discovery is the throughput bottleneck. Version-diff is the highest-yield unsaturated axis. |
 | **F** | Concurrency-mode matrix + teardown fuzzer (T1.2, T1.3) | E for scaffolding | Cheap once E lands. |
 | **G** | Grader validator + repro verifier (T3.1, T3.2) | none | Locks packaging quality permanently. Can run in parallel with A–D. |
@@ -371,6 +371,16 @@ Answered here because it will keep coming up.
 
 ## 13. Change log
 
+- 2026-08-06 — Chunks A, B, C, D shipped in sequence (all in a single
+  session). Repro-affidavit gate, difficulty gate (N=3 headless
+  `claude -p` sessions, median ≥ 60 min), own-words writeup audit
+  (live GitHub fetch with snapshot fallback + 8-word phrase
+  matching + paragraph-scoped annotations), and divergence probe
+  (N=3 diagnosis sessions, cluster by shared content-word overlap,
+  ≥ 2 clusters = proceed). Also `bse scaffold-candidate` as the
+  ergonomics multiplier and a `dev-fixtures/trivial-candidate/`
+  smoke test for the difficulty driver. Full test suite grew from
+  144 → 275 tests.
 - 2026-08-06 — Full rewrite after reviewer feedback on dramatiq #431.
   Supersedes 2026-08-05 version. Key changes: three sourcing gates
   (affidavit, difficulty, own-words) added as load-bearing gates;

@@ -50,9 +50,9 @@ __all__ = [
 # ---------------------------------------------------------------------------
 AFFIDAVIT_FILENAME: Final = "repro-affidavit.json"
 # v2 (2026-08-06, chunk C) adds the required `upstream_issue_url` field so
-# the writeup audit (Gate 3) can fetch the linked thread. v1 affidavits do
-# not carry that field and are rejected by the validator; migration is a
-# one-line addition per candidate.
+# the writeup audit (Gate 3) can fetch the linked thread. v1 shipped and
+# was superseded on the same branch, before any v1 affidavit landed on
+# disk anywhere — no migration path exists or is needed.
 AFFIDAVIT_SCHEMA_VERSION: Final = "2"
 
 # Transcript size cap. Real asciinema recordings of a reproduction step run
