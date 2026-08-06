@@ -48,7 +48,17 @@ from core.divergence import (
     DivergenceError,
     run_divergence_probe,
 )
+from core.grader_validator import (
+    GRADER_VALIDATION_FILENAME,
+    GraderValidatorError,
+    run_grader_validation,
+)
 from core.reporter import Report
+from core.repro_verifier import (
+    REPRO_VERIFICATION_FILENAME,
+    ReproVerifierError,
+    run_repro_verification,
+)
 from core.writeup_audit import (
     AUDIT_REPORT_FILENAME,
     WriteupAuditError,
@@ -94,6 +104,10 @@ EXIT_MODE_MATRIX_PRECONDITION = 15
 EXIT_MODE_MATRIX_HAS_DIVERGENCE = 16
 EXIT_TEARDOWN_PRECONDITION = 17
 EXIT_TEARDOWN_HAS_DIVERGENCE = 18
+EXIT_GRADER_VALIDATION_PRECONDITION = 19
+EXIT_GRADER_VALIDATION_REJECT = 20
+EXIT_REPRO_VERIFIER_PRECONDITION = 21
+EXIT_REPRO_VERIFIER_NO_LONGER_REPRODUCIBLE = 22
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +819,65 @@ def _cmd_teardown_fuzz(args: argparse.Namespace, manifests: Mapping[str, Manifes
 
 
 # ---------------------------------------------------------------------------
+# `bse validate-grader <candidate-dir>` — T3.1, upgrade-plan.md §8.
+#
+# Drive the candidate's grade.py against a manifest of expected outcomes:
+# baseline (must FAIL), canonical-fix (must PASS), N mutated buggy trees
+# (must FAIL). Rejects graders that key on implementation details of the
+# canonical fix rather than on the fix itself.
+# ---------------------------------------------------------------------------
+def _cmd_validate_grader(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    candidate_dir = Path(args.candidate_dir)
+    try:
+        report = run_grader_validation(candidate_dir)
+    except GraderValidatorError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_GRADER_VALIDATION_PRECONDITION
+
+    if not args.no_report:
+        out_path = candidate_dir / GRADER_VALIDATION_FILENAME.replace(".json", "-report.json")
+        out_path.write_text(report.to_json() + "\n", encoding="utf-8")
+        print(f"→ wrote {out_path}")
+    print(f"  {report.summary_line()}")
+    for inv in report.invocations:
+        verdict = "OK" if inv.matched_expected else "MISMATCH"
+        print(f"  [{verdict}] {inv.label:<20s} expected={inv.expected:<5s} exit={inv.exit_code}")
+    if not report.passed:
+        return EXIT_GRADER_VALIDATION_REJECT
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# `bse verify-repro <candidate-dir>` — T3.2, upgrade-plan.md §8.
+#
+# Ephemeral venv, install the affidavit's pin, run reproduce.sh, assert
+# baseline still FAILs. Intended to run nightly via cron — see
+# scripts/nightly-verify-repro.sh for the pattern.
+# ---------------------------------------------------------------------------
+def _cmd_verify_repro(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    candidate_dir = Path(args.candidate_dir)
+    try:
+        report = run_repro_verification(
+            candidate_dir,
+            pinned_package=args.pinned_package,
+            pinned_version=args.pinned_version,
+            keep_workdir=args.keep_workdir,
+        )
+    except ReproVerifierError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_REPRO_VERIFIER_PRECONDITION
+
+    if not args.no_report:
+        out_path = candidate_dir / REPRO_VERIFICATION_FILENAME
+        out_path.write_text(report.to_json() + "\n", encoding="utf-8")
+        print(f"→ wrote {out_path}")
+    print(f"  {report.summary_line()}")
+    if not report.still_reproducible:
+        return EXIT_REPRO_VERIFIER_NO_LONGER_REPRODUCIBLE
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing.
 # ---------------------------------------------------------------------------
 def _add_concurrency_matrix_subparser(
@@ -839,6 +912,73 @@ def _add_concurrency_matrix_subparser(
     p.add_argument("--out", default=None, help="Output directory. Default under reports/.")
     p.add_argument(
         "--no-install", action="store_true", help="Skip pip install even if --version is given."
+    )
+
+
+def _add_validate_grader_subparser(
+    subs: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p = subs.add_parser(
+        "validate-grader",
+        help=(
+            "Drive the candidate's grade.py against a validation manifest; "
+            "assert PASS on canonical fix + FAIL on baseline + FAIL on ≥3 "
+            "mutated buggy variants (T3.1, upgrade-plan.md §8)."
+        ),
+    )
+    p.add_argument(
+        "candidate_dir",
+        help=(
+            "Path to the candidate directory (must contain grade.py "
+            f"and {GRADER_VALIDATION_FILENAME})."
+        ),
+    )
+    p.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Do not write the report file; print outcome only.",
+    )
+
+
+def _add_verify_repro_subparser(
+    subs: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p = subs.add_parser(
+        "verify-repro",
+        help=(
+            "Ephemeral venv, install the affidavit's pin, run reproduce.sh; "
+            "confirm baseline still FAILs (T3.2, upgrade-plan.md §8)."
+        ),
+    )
+    p.add_argument(
+        "candidate_dir",
+        help=(
+            "Path to the candidate directory (must contain "
+            "repro-affidavit.json and reproduce.sh)."
+        ),
+    )
+    p.add_argument(
+        "--pinned-package",
+        required=True,
+        help="pypi package name to install (the plugin's manifest usually names this).",
+    )
+    p.add_argument(
+        "--pinned-version",
+        default=None,
+        help=(
+            "PEP-440 version string. Omit to derive from the affidavit's "
+            "pinned_commit (strips a leading 'v')."
+        ),
+    )
+    p.add_argument(
+        "--keep-workdir",
+        action="store_true",
+        help="Leave the tmp workdir on disk for post-mortem inspection.",
+    )
+    p.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Do not write repro-verification.json; print outcome only.",
     )
 
 
@@ -1055,6 +1195,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     _add_concurrency_matrix_subparser(subs)
     _add_teardown_fuzz_subparser(subs)
+    _add_validate_grader_subparser(subs)
+    _add_verify_repro_subparser(subs)
 
     p_tr = subs.add_parser(
         "triage",
@@ -1094,6 +1236,8 @@ _DISPATCH: Mapping[str, Callable[[argparse.Namespace, Mapping[str, Manifest]], i
             "scaffold-candidate": _cmd_scaffold_candidate,
             "teardown-fuzz": _cmd_teardown_fuzz,
             "triage": _cmd_triage,
+            "validate-grader": _cmd_validate_grader,
+            "verify-repro": _cmd_verify_repro,
             "writeup-audit": _cmd_writeup_audit,
         }
     )

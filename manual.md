@@ -127,7 +127,7 @@ source .venv/bin/activate
 ### 3.1 The `bse` CLI — one command per framework (the fast path)
 
 After `uv pip install -e ".[dev,fastapi]"` the `bse` executable is on your
-venv `PATH`. Eleven subcommands:
+venv `PATH`. Thirteen subcommands:
 
 * `bse list` / `bse run <plugin>` / `bse install <plugin>` — the harness /
   plugin flow (below).
@@ -174,6 +174,24 @@ venv `PATH`. Eleven subcommands:
   `core.plugin_extensions.TeardownAware`. Exit codes
   `EXIT_TEARDOWN_PRECONDITION` (17) and
   `EXIT_TEARDOWN_HAS_DIVERGENCE` (18). Writes `teardown-fuzz.json`.
+* `bse validate-grader <candidate-dir>` — T3.1 (upgrade-plan.md §8).
+  Drive the candidate's `grade.py` against a
+  `grader-validation.json` manifest (baseline_report,
+  canonical_fix_report, ≥ 3 mutated_buggy_reports). Asserts
+  grader FAILs baseline, PASSes canonical fix, and FAILs every
+  mutation. Rejects graders that key on implementation details of
+  the canonical fix. Exit codes
+  `EXIT_GRADER_VALIDATION_PRECONDITION` (19) and
+  `EXIT_GRADER_VALIDATION_REJECT` (20).
+* `bse verify-repro <candidate-dir> --pinned-package NAME
+  [--pinned-version VER]` — T3.2 (upgrade-plan.md §8). Fresh
+  tmpdir venv, `uv pip install <pkg>==<ver>` (falls back to pip),
+  run the candidate's `reproduce.sh`. If it now exits 0 the fix
+  has landed upstream (or deps drifted) — candidate no longer
+  reproducible. Intended for nightly cron; see
+  `scripts/nightly-verify-repro.sh`. Exit codes
+  `EXIT_REPRO_VERIFIER_PRECONDITION` (21) and
+  `EXIT_REPRO_VERIFIER_NO_LONGER_REPRODUCIBLE` (22).
 
 **See what's available:**
 

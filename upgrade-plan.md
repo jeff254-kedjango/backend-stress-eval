@@ -297,7 +297,7 @@ commit → memory note (Rules 6 + 8).
 | **D** ✅ | Divergence probe + `bse triage` (refined from T2.1) | A, B, C | Runs last of the four gates; benefits from filtering out easy or fabricated candidates first. Shipped 2026-08-06. |
 | **E** ✅ | Differential-across-versions runner (T1.1) + `bse diff` | none, but sequenced here | Once the gates exist, discovery is the throughput bottleneck. Version-diff is the highest-yield unsaturated axis. Shipped 2026-08-06. |
 | **F** ✅ | Concurrency-mode matrix + teardown fuzzer (T1.2, T1.3) | E for scaffolding | Cheap once E lands. Shipped 2026-08-06. |
-| **G** | Grader validator + repro verifier (T3.1, T3.2) | none | Locks packaging quality permanently. Can run in parallel with A–D. |
+| **G** ✅ | Grader validator + repro verifier (T3.1, T3.2) | none | Locks packaging quality permanently. Can run in parallel with A–D. Shipped 2026-08-06. |
 | **H** | Fault-injected probe adapter (T1.4) | E, F | Multiplier — best done once the shape above is in place. |
 
 **Old-task treatment (per decision 2026-08-06):** existing tasks
@@ -371,6 +371,20 @@ Answered here because it will keep coming up.
 
 ## 13. Change log
 
+- 2026-08-06 — Chunk G shipped: packaging-hardening tier as first-
+  class CLI verbs. T3.1 grader validator (`bse validate-grader`) —
+  drives `grade.py` against a `grader-validation.json` manifest
+  declaring baseline (must FAIL), canonical fix (must PASS), and
+  ≥ 3 mutated buggy variants (must FAIL). Refuses graders that
+  key on canonical-fix implementation detail rather than on the
+  fix itself. Path-escape guard on manifest paths. T3.2 repro
+  verifier (`bse verify-repro`) — ephemeral tmpdir venv, uv-first
+  with pip fallback, run `reproduce.sh` with `PYTHON` set to the
+  venv interpreter, assert baseline still FAILs. Nightly-cron
+  wrapper shipped as `scripts/nightly-verify-repro.sh` (operator-
+  owned scheduling, harness-owned verb). Four new exit codes
+  19-22, byte-stable artifacts (`grader-validation-report.json`,
+  `repro-verification.json`). Test count 311 → 339.
 - 2026-08-06 — Chunk F shipped: two new unsaturated-axis runners.
   T1.2 concurrency-mode matrix (`bse concurrency-matrix`) — runs
   discovery under every mode the plugin declares via an opt-in
