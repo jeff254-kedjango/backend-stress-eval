@@ -32,8 +32,10 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "CANONICAL_FAULTS",
     "CONCURRENCY_MODES_CANONICAL",
     "ConcurrencyAware",
+    "FaultInjectable",
     "TeardownAware",
 ]
 
@@ -83,6 +85,57 @@ class ConcurrencyAware(Protocol):
     def available_modes(self) -> tuple[str, ...]: ...
 
     def build_app_for_mode(self, mode: str, /) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
+# Canonical fault set for T1.4.
+#
+# These are the fault shapes the harness knows how to reason about
+# generically — a plugin's `available_faults()` may include others (a
+# vendor-specific fault), but the canonical set is what the CLI/runner
+# assumes when the caller omits `--faults`.
+#
+# NOT included here:
+#   * `sigterm-mid-request` — requires OS-level signal machinery and
+#     has flaky-test failure modes. Deferred to a follow-up chunk.
+# ---------------------------------------------------------------------------
+CANONICAL_FAULTS: tuple[str, ...] = (
+    "background-exception",
+    "cancel-mid-request",
+    "client-disconnect",
+)
+
+
+@runtime_checkable
+class FaultInjectable(Protocol):
+    """Optional extension for plugins that support fault injection.
+
+    Implementations must expose:
+
+    * ``available_faults()`` — the fault names this plugin can inject.
+      Empty tuple means "I opted in but there's nothing to try" — the
+      matrix runner treats that as a plugin bug and raises.
+    * ``probe_with_fault(client, fault_name)`` — analogue of
+      :meth:`Plugin.probe` that runs the canonical probe under the
+      named fault. Must raise :class:`ValueError` if
+      ``fault_name not in available_faults()``. The probe itself
+      MAY raise (that's expected — a fault-injected probe often
+      raises on the client side); the plugin is responsible for
+      swallowing framework-internal exceptions if it wants to
+      surface only the invariant-visible effects.
+
+    Litestar #3772 was exactly this shape: an anyio-lifecycle-leak-
+    style bug that only surfaces under specific fault conditions.
+    A discovery sweep that never faults never sees such bugs.
+
+    Rule 5: fail-loud on unknown fault. Silent skip would let a
+    misspelled CLI flag produce a report that looks fine but
+    tested nothing.
+    """
+
+    def available_faults(self) -> tuple[str, ...]: ...
+
+    def probe_with_fault(self, client: Any, fault_name: str, /) -> None: ...
 
 
 @runtime_checkable

@@ -298,7 +298,7 @@ commit → memory note (Rules 6 + 8).
 | **E** ✅ | Differential-across-versions runner (T1.1) + `bse diff` | none, but sequenced here | Once the gates exist, discovery is the throughput bottleneck. Version-diff is the highest-yield unsaturated axis. Shipped 2026-08-06. |
 | **F** ✅ | Concurrency-mode matrix + teardown fuzzer (T1.2, T1.3) | E for scaffolding | Cheap once E lands. Shipped 2026-08-06. |
 | **G** ✅ | Grader validator + repro verifier (T3.1, T3.2) | none | Locks packaging quality permanently. Can run in parallel with A–D. Shipped 2026-08-06. |
-| **H** | Fault-injected probe adapter (T1.4) | E, F | Multiplier — best done once the shape above is in place. |
+| **H** ✅ | Fault-injected probe adapter (T1.4) | E, F | Multiplier — best done once the shape above is in place. Shipped 2026-08-06. |
 
 **Old-task treatment (per decision 2026-08-06):** existing tasks
 (`anyio-lifecycle-leak`, `aiocache-ttl-leak`, `piccolo-txn-data-loss`,
@@ -371,6 +371,19 @@ Answered here because it will keep coming up.
 
 ## 13. Change log
 
+- 2026-08-06 — Chunk H shipped: fault-injected probe adapter
+  (`bse fault-matrix`). Multiplier on every existing invariant.
+  Opt-in `FaultInjectable` Protocol (`available_faults`,
+  `probe_with_fault`) mirrors the F-chunk Protocol idiom.
+  `_FaultBoundPlugin` adapter routes probe → probe_with_fault
+  per fault while forwarding every other Plugin method. Runner
+  returns `dict[fault_name, dict[layer_name, Report]]`;
+  `diff_faults()` surfaces cross-fault divergences using the
+  same set-arithmetic idiom as `diff_modes` (Chunk F). Canonical
+  fault set: `client-disconnect`, `cancel-mid-request`,
+  `background-exception`. `sigterm-mid-request` deferred (OS-
+  signal machinery + flaky-test failure modes). Exit codes 23-24.
+  Byte-stable `fault-matrix.json`. Test count 339 → 352.
 - 2026-08-06 — Chunk G shipped: packaging-hardening tier as first-
   class CLI verbs. T3.1 grader validator (`bse validate-grader`) —
   drives `grade.py` against a `grader-validation.json` manifest

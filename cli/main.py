@@ -76,6 +76,11 @@ from harnesses.discovery import (
     run_discovery,
 )
 from harnesses.eval_task import package_eval_task
+from harnesses.fault_matrix import (
+    FAULT_MATRIX_FILENAME,
+    FaultMatrixError,
+    run_fault_matrix,
+)
 from harnesses.teardown_fuzzer import (
     TEARDOWN_FUZZ_FILENAME,
     TeardownFuzzError,
@@ -108,6 +113,8 @@ EXIT_GRADER_VALIDATION_PRECONDITION = 19
 EXIT_GRADER_VALIDATION_REJECT = 20
 EXIT_REPRO_VERIFIER_PRECONDITION = 21
 EXIT_REPRO_VERIFIER_NO_LONGER_REPRODUCIBLE = 22
+EXIT_FAULT_MATRIX_PRECONDITION = 23
+EXIT_FAULT_MATRIX_HAS_DIVERGENCE = 24
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +826,54 @@ def _cmd_teardown_fuzz(args: argparse.Namespace, manifests: Mapping[str, Manifes
 
 
 # ---------------------------------------------------------------------------
+# `bse fault-matrix <plugin>` — T1.4, upgrade-plan.md §7.
+#
+# Multiplier on existing invariants. Client-disconnect / cancel /
+# background-exception faults reveal state-desync bugs (litestar #3772
+# shape) that a clean-probe sweep never touches. Divergence between
+# faults is the finding.
+# ---------------------------------------------------------------------------
+def _cmd_fault_matrix(args: argparse.Namespace, manifests: Mapping[str, Manifest]) -> int:
+    name: str = args.name
+    if name not in manifests:
+        print(f"error: unknown plugin {name!r}. Try 'bse list'.", file=sys.stderr)
+        return EXIT_FAULT_MATRIX_PRECONDITION
+
+    manifest = manifests[name]
+    version: str | None = args.version
+    if version is not None and not args.no_install:
+        rc = _pip_install_at_version(manifest, version)
+        if rc != EXIT_OK:
+            return EXIT_FAULT_MATRIX_PRECONDITION
+
+    target_commit = manifest.default_target_commit(version)
+    plugin = manifest.plugin_factory(manifest.default_app_factory)
+
+    faults: tuple[str, ...] | None = tuple(args.faults.split(",")) if args.faults else None
+
+    try:
+        matrix = run_fault_matrix(
+            plugin=plugin,
+            target_commit=target_commit,
+            faults=faults,
+            iterations_l1=args.iterations,
+            rounds_l2=args.rounds_l2,
+            rounds_l3=args.rounds_l3,
+        )
+    except FaultMatrixError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_FAULT_MATRIX_PRECONDITION
+
+    out_dir = Path(args.out) if args.out else Path("reports/fault-matrix") / target_commit
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / FAULT_MATRIX_FILENAME
+    out_path.write_text(matrix.to_json() + "\n", encoding="utf-8")
+    print(f"→ wrote {out_path}")
+    print(f"  {matrix.summary_line()}")
+    return EXIT_FAULT_MATRIX_HAS_DIVERGENCE if matrix.has_divergence else EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # `bse validate-grader <candidate-dir>` — T3.1, upgrade-plan.md §8.
 #
 # Drive the candidate's grade.py against a manifest of expected outcomes:
@@ -908,6 +963,42 @@ def _add_concurrency_matrix_subparser(
     )
     p.add_argument(
         "--rounds-l3", type=int, default=DEFAULT_ROUNDS_L3, help="Layer 3 rounds per mode."
+    )
+    p.add_argument("--out", default=None, help="Output directory. Default under reports/.")
+    p.add_argument(
+        "--no-install", action="store_true", help="Skip pip install even if --version is given."
+    )
+
+
+def _add_fault_matrix_subparser(subs: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = subs.add_parser(
+        "fault-matrix",
+        help=(
+            "Run discovery under every fault the plugin exposes "
+            "and diff across faults (T1.4, upgrade-plan.md §7)."
+        ),
+    )
+    p.add_argument("name", help="Plugin name (see 'bse list').")
+    p.add_argument("--version", default=None, help="Pin the target pip package to this version.")
+    p.add_argument(
+        "--faults",
+        default=None,
+        help=(
+            "Comma-separated faults to run. Omit for every available fault "
+            "the plugin declares. Unknown fault = precondition failure."
+        ),
+    )
+    p.add_argument(
+        "--iterations",
+        type=int,
+        default=DEFAULT_ITERATIONS_L1,
+        help="Layer 1 iterations per fault.",
+    )
+    p.add_argument(
+        "--rounds-l2", type=int, default=DEFAULT_ROUNDS_L2, help="Layer 2 rounds per fault."
+    )
+    p.add_argument(
+        "--rounds-l3", type=int, default=DEFAULT_ROUNDS_L3, help="Layer 3 rounds per fault."
     )
     p.add_argument("--out", default=None, help="Output directory. Default under reports/.")
     p.add_argument(
@@ -1194,6 +1285,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     _add_concurrency_matrix_subparser(subs)
+    _add_fault_matrix_subparser(subs)
     _add_teardown_fuzz_subparser(subs)
     _add_validate_grader_subparser(subs)
     _add_verify_repro_subparser(subs)
@@ -1233,6 +1325,7 @@ _DISPATCH: Mapping[str, Callable[[argparse.Namespace, Mapping[str, Manifest]], i
             "concurrency-matrix": _cmd_concurrency_matrix,
             "difficulty-check": _cmd_difficulty,
             "diff": _cmd_diff,
+            "fault-matrix": _cmd_fault_matrix,
             "scaffold-candidate": _cmd_scaffold_candidate,
             "teardown-fuzz": _cmd_teardown_fuzz,
             "triage": _cmd_triage,

@@ -127,7 +127,7 @@ source .venv/bin/activate
 ### 3.1 The `bse` CLI — one command per framework (the fast path)
 
 After `uv pip install -e ".[dev,fastapi]"` the `bse` executable is on your
-venv `PATH`. Thirteen subcommands:
+venv `PATH`. Fourteen subcommands:
 
 * `bse list` / `bse run <plugin>` / `bse install <plugin>` — the harness /
   plugin flow (below).
@@ -192,6 +192,16 @@ venv `PATH`. Thirteen subcommands:
   `scripts/nightly-verify-repro.sh`. Exit codes
   `EXIT_REPRO_VERIFIER_PRECONDITION` (21) and
   `EXIT_REPRO_VERIFIER_NO_LONGER_REPRODUCIBLE` (22).
+* `bse fault-matrix <plugin>` — T1.4 (upgrade-plan.md §7).
+  Multiplier on every existing invariant: run discovery under
+  every fault the plugin declares (`client-disconnect`,
+  `cancel-mid-request`, `background-exception`) and diff across
+  faults. State-desync bugs that hide behind a clean probe
+  (litestar #3772 shape) surface here. Plugin must implement
+  `core.plugin_extensions.FaultInjectable`. Exit codes
+  `EXIT_FAULT_MATRIX_PRECONDITION` (23) and
+  `EXIT_FAULT_MATRIX_HAS_DIVERGENCE` (24). Writes
+  `fault-matrix.json`.
 
 **See what's available:**
 
