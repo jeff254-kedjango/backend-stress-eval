@@ -22,6 +22,11 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from core.affidavit import (
+    AFFIDAVIT_FILENAME,
+    AffidavitError,
+    validate_affidavit,
+)
 from harnesses.discovery import (
     DEFAULT_ITERATIONS_L1,
     DEFAULT_ROUNDS_L2,
@@ -39,6 +44,7 @@ EXIT_USAGE = 2
 EXIT_UNKNOWN_PLUGIN = 3
 EXIT_INSTALL_FAILED = 4
 EXIT_ALREADY_EXISTS = 5
+EXIT_AFFIDAVIT_INVALID = 6
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +285,45 @@ def _cmd_install(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -
 
 
 # ---------------------------------------------------------------------------
+# `bse affidavit <candidate-dir>` — Gate 1 of the sourcing gates.
+#
+# See upgrade-plan.md §4 Gate 1 and rules.md Rule 11. This verb is the
+# mechanical enforcement of "no candidate packages without a personally-
+# reproduced-on-bench affidavit". Exits nonzero on any structural or
+# semantic failure; exits zero only when the affidavit fully passes.
+# ---------------------------------------------------------------------------
+def _cmd_affidavit(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) -> int:
+    candidate_dir = Path(args.candidate_dir)
+    if not candidate_dir.is_dir():
+        print(
+            f"error: {candidate_dir} is not a directory. "
+            f"Point at the candidate folder containing {AFFIDAVIT_FILENAME}.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    try:
+        failures = validate_affidavit(candidate_dir)
+    except AffidavitError as exc:
+        # File-level errors: missing file, bad JSON, missing/wrong-typed fields.
+        # These are pre-conditions — we cannot even start semantic checks.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_AFFIDAVIT_INVALID
+
+    if failures:
+        print(
+            f"affidavit REJECTED ({len(failures)} failure(s)) at {candidate_dir}:",
+            file=sys.stderr,
+        )
+        for f in failures:
+            print(f"  [{f.field}] {f.detail}", file=sys.stderr)
+        return EXIT_AFFIDAVIT_INVALID
+
+    print(f"→ affidavit OK: {candidate_dir / AFFIDAVIT_FILENAME}")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing.
 # ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
@@ -329,6 +374,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_install = subs.add_parser("install", help="Scaffold a new plugin under plugins/<name>/.")
     p_install.add_argument("name", help="Plugin package name (must be a python identifier).")
 
+    p_aff = subs.add_parser(
+        "affidavit",
+        help=(
+            "Validate the repro-affidavit under a candidate dir "
+            "(Gate 1 of the sourcing gates; see upgrade-plan.md)."
+        ),
+    )
+    p_aff.add_argument(
+        "candidate_dir",
+        help=("Path to the candidate directory containing " f"{AFFIDAVIT_FILENAME}."),
+    )
+
     return parser
 
 
@@ -342,6 +399,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args, manifests)
     if args.cmd == "install":
         return _cmd_install(args, manifests)
+    if args.cmd == "affidavit":
+        return _cmd_affidavit(args, manifests)
     parser.print_help()
     return EXIT_USAGE
 

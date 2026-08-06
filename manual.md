@@ -1,7 +1,11 @@
 # backend-stress-eval — Operator's Manual
 
 > Companion docs: [`discovery-strategy.md`](./discovery-strategy.md) (the "why"),
-> [`rules.md`](./rules.md) (the nine standing working rules).
+> [`rules.md`](./rules.md) (the thirteen standing working rules — Rules 11-13
+> are the sourcing gates added 2026-08-06),
+> [`upgrade-plan.md`](./upgrade-plan.md) (the reviewer-bar roadmap;
+> authoritative for the next round of work — supersedes the 2026-08-05
+> C+ → A version).
 > This file is the **how**: how to run it, how to hunt bugs with it, how to
 > extend it.
 
