@@ -127,7 +127,7 @@ source .venv/bin/activate
 ### 3.1 The `bse` CLI — one command per framework (the fast path)
 
 After `uv pip install -e ".[dev,fastapi]"` the `bse` executable is on your
-venv `PATH`. Nine subcommands:
+venv `PATH`. Eleven subcommands:
 
 * `bse list` / `bse run <plugin>` / `bse install <plugin>` — the harness /
   plugin flow (below).
@@ -158,6 +158,22 @@ venv `PATH`. Nine subcommands:
   no changes, `EXIT_DIFF_HAS_CHANGES` (14) when the diff is non-empty,
   `EXIT_DIFF_PRECONDITION` (13) on bad inputs. The diff *is* the
   finding — see `upgrade-plan.md` §7 T1.1.
+* `bse concurrency-matrix <plugin>` — T1.2 (upgrade-plan.md §7).
+  Run discovery under every concurrency mode the plugin declares
+  (`asyncio`, `anyio-trio`, `anyio-asyncio`, `sync-threadpool`) and
+  diff violations across modes. Divergence between modes is the
+  finding. The plugin must implement
+  `core.plugin_extensions.ConcurrencyAware`; the harness refuses
+  otherwise with `EXIT_MODE_MATRIX_PRECONDITION` (15).
+  `EXIT_MODE_MATRIX_HAS_DIVERGENCE` (16) marks a non-empty finding
+  set. Writes `mode-matrix.json`.
+* `bse teardown-fuzz <plugin>` — T1.3 (upgrade-plan.md §7).
+  Enumerate every permutation of the plugin's teardown-hook order
+  (bounded at 4! = 24) and flag orders whose outcome diverges from
+  the canonical order. Plugin must implement
+  `core.plugin_extensions.TeardownAware`. Exit codes
+  `EXIT_TEARDOWN_PRECONDITION` (17) and
+  `EXIT_TEARDOWN_HAS_DIVERGENCE` (18). Writes `teardown-fuzz.json`.
 
 **See what's available:**
 

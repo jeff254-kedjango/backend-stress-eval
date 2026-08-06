@@ -63,8 +63,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests may use `assert` (S101) and hardcoded literals.
-"tests/**/*.py" = ["S101", "PLR2004"]
+# Tests may use `assert` (S101), hardcoded literals, and unused Protocol
+# implementation args (stub plugins implement the Plugin surface where
+# most methods are legitimate no-ops).
+"tests/**/*.py" = ["S101", "PLR2004", "ARG002"]
 # UP040 asks for PEP 695 `type X = ...` syntax, but mypy 1.11 still gates it
 # behind --enable-incomplete-feature=NewGenericSyntax. Until we bump mypy past
 # stable support, we keep `TypeAlias` (which mypy accepts) and mute ruff here.

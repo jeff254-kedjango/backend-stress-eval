@@ -54,6 +54,11 @@ from core.writeup_audit import (
     WriteupAuditError,
     run_writeup_audit,
 )
+from harnesses.concurrency_matrix import (
+    MODE_MATRIX_FILENAME,
+    ModeMatrixError,
+    run_concurrency_matrix,
+)
 from harnesses.discovery import (
     DEFAULT_ITERATIONS_L1,
     DEFAULT_ROUNDS_L2,
@@ -61,6 +66,11 @@ from harnesses.discovery import (
     run_discovery,
 )
 from harnesses.eval_task import package_eval_task
+from harnesses.teardown_fuzzer import (
+    TEARDOWN_FUZZ_FILENAME,
+    TeardownFuzzError,
+    run_teardown_fuzzer,
+)
 from plugins.registry import Manifest, load_manifests
 
 __all__ = ["main"]
@@ -80,6 +90,10 @@ EXIT_DIVERGENCE_PRECONDITION = 11
 EXIT_DIVERGENCE_REJECT = 12
 EXIT_DIFF_PRECONDITION = 13
 EXIT_DIFF_HAS_CHANGES = 14
+EXIT_MODE_MATRIX_PRECONDITION = 15
+EXIT_MODE_MATRIX_HAS_DIVERGENCE = 16
+EXIT_TEARDOWN_PRECONDITION = 17
+EXIT_TEARDOWN_HAS_DIVERGENCE = 18
 
 
 # ---------------------------------------------------------------------------
@@ -705,8 +719,145 @@ def _cmd_triage(args: argparse.Namespace, _manifests: Mapping[str, Manifest]) ->
 
 
 # ---------------------------------------------------------------------------
+# `bse concurrency-matrix <plugin>` — T1.2, upgrade-plan.md §7.
+#
+# Run discovery under every concurrency mode the plugin declares and diff
+# across modes. Divergence between modes is the finding — the operator
+# inspects mode-matrix.json and (if warranted) runs `bse scaffold-candidate`
+# on the interesting rows. Not a reject — divergence is *desired* output.
+# ---------------------------------------------------------------------------
+def _cmd_concurrency_matrix(args: argparse.Namespace, manifests: Mapping[str, Manifest]) -> int:
+    name: str = args.name
+    if name not in manifests:
+        print(f"error: unknown plugin {name!r}. Try 'bse list'.", file=sys.stderr)
+        return EXIT_MODE_MATRIX_PRECONDITION
+
+    manifest = manifests[name]
+    version: str | None = args.version
+    if version is not None and not args.no_install:
+        rc = _pip_install_at_version(manifest, version)
+        if rc != EXIT_OK:
+            return EXIT_MODE_MATRIX_PRECONDITION
+
+    target_commit = manifest.default_target_commit(version)
+    plugin = manifest.plugin_factory(manifest.default_app_factory)
+
+    modes: tuple[str, ...] | None = tuple(args.modes.split(",")) if args.modes else None
+
+    try:
+        matrix = run_concurrency_matrix(
+            plugin=plugin,
+            target_commit=target_commit,
+            modes=modes,
+            iterations_l1=args.iterations,
+            rounds_l2=args.rounds_l2,
+            rounds_l3=args.rounds_l3,
+        )
+    except ModeMatrixError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_MODE_MATRIX_PRECONDITION
+
+    out_dir = Path(args.out) if args.out else Path("reports/concurrency-matrix") / target_commit
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / MODE_MATRIX_FILENAME
+    out_path.write_text(matrix.to_json() + "\n", encoding="utf-8")
+    print(f"→ wrote {out_path}")
+    print(f"  {matrix.summary_line()}")
+    return EXIT_MODE_MATRIX_HAS_DIVERGENCE if matrix.has_divergence else EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# `bse teardown-fuzz <plugin>` — T1.3, upgrade-plan.md §7.
+#
+# Enumerate permutations of the plugin's teardown-hook ordering (up to
+# TEARDOWN_MAX_HOOKS = 4). Orders whose behaviour diverges from the
+# canonical order surface as findings. Not a reject.
+# ---------------------------------------------------------------------------
+def _cmd_teardown_fuzz(args: argparse.Namespace, manifests: Mapping[str, Manifest]) -> int:
+    name: str = args.name
+    if name not in manifests:
+        print(f"error: unknown plugin {name!r}. Try 'bse list'.", file=sys.stderr)
+        return EXIT_TEARDOWN_PRECONDITION
+
+    manifest = manifests[name]
+    version: str | None = args.version
+    if version is not None and not args.no_install:
+        rc = _pip_install_at_version(manifest, version)
+        if rc != EXIT_OK:
+            return EXIT_TEARDOWN_PRECONDITION
+
+    target_commit = manifest.default_target_commit(version)
+    plugin = manifest.plugin_factory(manifest.default_app_factory)
+
+    try:
+        report = run_teardown_fuzzer(plugin=plugin, target_commit=target_commit)
+    except TeardownFuzzError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_TEARDOWN_PRECONDITION
+
+    out_dir = Path(args.out) if args.out else Path("reports/teardown-fuzz") / target_commit
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / TEARDOWN_FUZZ_FILENAME
+    out_path.write_text(report.to_json() + "\n", encoding="utf-8")
+    print(f"→ wrote {out_path}")
+    print(f"  {report.summary_line()}")
+    return EXIT_TEARDOWN_HAS_DIVERGENCE if report.has_divergence else EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # Argparse plumbing.
 # ---------------------------------------------------------------------------
+def _add_concurrency_matrix_subparser(
+    subs: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    p = subs.add_parser(
+        "concurrency-matrix",
+        help=(
+            "Run discovery under every concurrency mode the plugin exposes "
+            "and diff across modes (T1.2, upgrade-plan.md §7)."
+        ),
+    )
+    p.add_argument("name", help="Plugin name (see 'bse list').")
+    p.add_argument("--version", default=None, help="Pin the target pip package to this version.")
+    p.add_argument(
+        "--modes",
+        default=None,
+        help=(
+            "Comma-separated modes to run. Omit for all available modes "
+            "the plugin declares. Unknown mode = precondition failure."
+        ),
+    )
+    p.add_argument(
+        "--iterations", type=int, default=DEFAULT_ITERATIONS_L1, help="Layer 1 iterations per mode."
+    )
+    p.add_argument(
+        "--rounds-l2", type=int, default=DEFAULT_ROUNDS_L2, help="Layer 2 rounds per mode."
+    )
+    p.add_argument(
+        "--rounds-l3", type=int, default=DEFAULT_ROUNDS_L3, help="Layer 3 rounds per mode."
+    )
+    p.add_argument("--out", default=None, help="Output directory. Default under reports/.")
+    p.add_argument(
+        "--no-install", action="store_true", help="Skip pip install even if --version is given."
+    )
+
+
+def _add_teardown_fuzz_subparser(subs: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = subs.add_parser(
+        "teardown-fuzz",
+        help=(
+            "Enumerate every permutation of the plugin's teardown hooks "
+            "(bounded at 4! = 24) and flag divergent orders (T1.3)."
+        ),
+    )
+    p.add_argument("name", help="Plugin name (see 'bse list').")
+    p.add_argument("--version", default=None, help="Pin the target pip package to this version.")
+    p.add_argument("--out", default=None, help="Output directory. Default under reports/.")
+    p.add_argument(
+        "--no-install", action="store_true", help="Skip pip install even if --version is given."
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bse",
@@ -902,6 +1053,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip pip installs; use whatever version is currently installed.",
     )
 
+    _add_concurrency_matrix_subparser(subs)
+    _add_teardown_fuzz_subparser(subs)
+
     p_tr = subs.add_parser(
         "triage",
         help=(
@@ -934,9 +1088,11 @@ _DISPATCH: Mapping[str, Callable[[argparse.Namespace, Mapping[str, Manifest]], i
             "run": _cmd_run,
             "install": _cmd_install,
             "affidavit": _cmd_affidavit,
+            "concurrency-matrix": _cmd_concurrency_matrix,
             "difficulty-check": _cmd_difficulty,
             "diff": _cmd_diff,
             "scaffold-candidate": _cmd_scaffold_candidate,
+            "teardown-fuzz": _cmd_teardown_fuzz,
             "triage": _cmd_triage,
             "writeup-audit": _cmd_writeup_audit,
         }
